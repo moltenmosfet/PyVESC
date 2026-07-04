@@ -429,8 +429,8 @@ class TestInterface(TestCase):
 
 class TestTCPTransport(TestCase):
     """
-    Tests for the TCP<->UART bridge transport, using loopback servers that
-    stand in for the ESP32 bridge + VESC.
+    Tests for the TCP bridge transport, using loopback servers that
+    stand in for the bridge + VESC.
     """
 
     def _start_server(self, handler):

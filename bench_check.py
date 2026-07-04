@@ -11,7 +11,7 @@ Verifies on real hardware:
 
 Usage: ./.venv/bin/python bench_check.py [port] [can_id]
   port: serial device (default /dev/ttyACM0) or a TCP bridge address
-        like tcp://192.168.1.50 (see esp32_bridge/)
+        like tcp://192.168.1.50
   can_id: CAN ID of the motor controller when `port` is a bridge on its
           CAN bus rather than the controller itself (e.g. a VESC Express)
 """

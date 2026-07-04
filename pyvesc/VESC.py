@@ -29,8 +29,8 @@ class VESC(object):
                  can_id=None):
         """
         :param serial_port: Serial device to use for communication (i.e. "COM3" or "/dev/tty.usbmodem0"),
-                            or the address of a TCP<->UART bridge as "tcp://host[:port]"
-                            (default port 65102, e.g. "tcp://192.168.1.50" for an ESP32 bridge)
+                            or the address of a TCP bridge as "tcp://host[:port]"
+                            (default port 65102, e.g. "tcp://192.168.1.50" for a VESC Express)
         :param has_sensor: Whether or not the bldc motor is using a hall effect sensor
         :param start_heartbeat: Whether or not to automatically start the heartbeat thread that will keep commands
                                 alive.

@@ -1,6 +1,6 @@
 """
-TCP transport for talking to a VESC through a TCP<->UART bridge (e.g. an
-ESP32 running a transparent bridge, or VESC Express hardware).
+TCP transport for talking to a VESC through a TCP bridge (e.g. VESC Express
+hardware, or any transparent TCP<->serial bridge to the VESC's UART port).
 
 Exposes the subset of the pyserial API that pyvesc.VESC uses (write, read,
 in_waiting, flush, close, is_open) so serial and TCP transports are
