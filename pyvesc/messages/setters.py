@@ -72,6 +72,17 @@ class SetCurrentBrake(metaclass=VESCMessage):
     ]
 
 
+class SetHandbrake(metaclass=VESCMessage):
+    """Apply a holding current at standstill (open-loop, no position tracking).
+
+    :ivar current: Holding current in amps.
+    """
+    id = VedderCmd.COMM_SET_HANDBRAKE
+    send_fields = [
+        ('current', 'i', 1000)
+    ]
+
+
 class SetPosition(metaclass=VESCMessage):
     """Set the rotor angle based off of an encoder or sensor
 

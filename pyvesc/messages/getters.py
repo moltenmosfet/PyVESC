@@ -24,18 +24,20 @@ pre_v3_33_fields = [('temp_mos1', 'h', 10),
 
 
 class GetVersion(metaclass=VESCMessage):
-    """ Gets version fields
+    """ Gets the firmware version.
+
+    The firmware replies [major, minor, hw_name string, uuid, ...]; only the
+    two version bytes are decoded, the variable-length tail is ignored.
     """
     id = VedderCmd.COMM_FW_VERSION
 
     recv_fields = [
-        ('comm_fw_version', 'b', 0),
         ('fw_version_major', 'b', 0),
         ('fw_version_minor', 'b', 0)
     ]
 
     def __str__(self):
-        return f"{self.comm_fw_version}.{self.fw_version_major}.{self.fw_version_minor}"
+        return f"{self.fw_version_major}.{self.fw_version_minor}"
 
 
 class GetMotorConfig(metaclass=VESCMessage):
@@ -88,7 +90,13 @@ class GetValues(metaclass=VESCMessage):
         ('mc_fault_code', 'c', 0),
         ('pid_pos_now', 'i', 1000000),
         ('app_controller_id', 'c', 0),
-        ('time_ms', 'i', 1),
+        # per-FET temperatures and dq voltages, matching commands.c COMM_GET_VALUES
+        # field bits 18-20 (a trailing status byte on FW 6.x is tolerated and ignored)
+        ('temp_mos1', 'h', 10),
+        ('temp_mos2', 'h', 10),
+        ('temp_mos3', 'h', 10),
+        ('avg_vd', 'i', 1000),
+        ('avg_vq', 'i', 1000),
     ]
 
 
