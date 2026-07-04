@@ -9,9 +9,11 @@ Verifies on real hardware:
   4. the four-quadrant control commands are accepted without raising a fault:
      SetCurrent(0), SetCurrentBrake(0), SetHandbrake(0), SetDutyCycle(0), SetRPM(0)
 
-Usage: ./.venv/bin/python bench_check.py [port]
+Usage: ./.venv/bin/python bench_check.py [port] [can_id]
   port: serial device (default /dev/ttyACM0) or a TCP bridge address
         like tcp://192.168.1.50 (see esp32_bridge/)
+  can_id: CAN ID of the motor controller when `port` is a bridge on its
+          CAN bus rather than the controller itself (e.g. a VESC Express)
 """
 
 import sys
@@ -36,9 +38,10 @@ def check(name, ok, detail=''):
 
 def main():
     port = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PORT
-    print(f"Connecting to {port} ...")
+    can_id = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    print(f"Connecting to {port}" + (f" (motor controller at CAN {can_id})" if can_id is not None else "") + " ...")
 
-    with VESC(serial_port=port) as vesc:
+    with VESC(serial_port=port, can_id=can_id) as vesc:
         # 1. handshake
         fw = vesc.get_firmware_version()
         check("GetVersion", fw is not None, f"firmware {fw}")
@@ -67,8 +70,8 @@ def main():
         # 4. four-quadrant command set, all zero-valued (motor absent => no action)
         commands = [
             ("SetCurrent(0)", lambda: vesc.set_current(0)),
-            ("SetCurrentBrake(0)", lambda: vesc.write(pyvesc.encode(SetCurrentBrake(0)))),
-            ("SetHandbrake(0)", lambda: vesc.write(pyvesc.encode(SetHandbrake(0)))),
+            ("SetCurrentBrake(0)", lambda: vesc.write(pyvesc.encode(SetCurrentBrake(0, can_id=vesc.can_id)))),
+            ("SetHandbrake(0)", lambda: vesc.write(pyvesc.encode(SetHandbrake(0, can_id=vesc.can_id)))),
             ("SetDutyCycle(0)", lambda: vesc.set_duty_cycle(0)),
             ("SetRPM(0)", lambda: vesc.set_rpm(0)),
         ]

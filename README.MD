@@ -24,16 +24,30 @@ that PyVESC is:
 
 ## TCP bridge support (this fork)
 `VESC()` accepts a `tcp://host[:port]` address (default port 65102) in place of a
-serial device, for driving a VESC through a TCP↔UART bridge — galvanic isolation
-from high-power test rigs:
+serial device, for driving a VESC through a TCP bridge — galvanic isolation from
+high-power test rigs. Two bridge options:
+
+**VESC Express** (official, CAN-attached): the Express answers TCP itself and the
+motor controller sits behind it on the CAN bus, so pass its CAN ID — every command,
+getter, and heartbeat is then forwarded automatically:
 
 ```python
-with VESC("tcp://192.168.1.50") as vesc:      # ESP32 bridge or VESC Express
+with VESC("tcp://192.168.1.50", can_id=100) as vesc:
     print(vesc.get_measurements().v_in)
 ```
 
-Bridge firmware for a classic ESP32, wiring, and the isolation rationale live in
-[esp32_bridge/](esp32_bridge/). The serial path is unchanged: `VESC("/dev/ttyACM0")`.
+(Find the ID with `COMM_PING_CAN`, or in VESC Tool's CAN device list. The Express
+serves one TCP client at a time and takes ~2 s to free the slot after a disconnect,
+so don't hammer reconnects.)
+
+**Transparent ESP32 UART bridge** (this repo): dumb pipe to the VESC's UART port,
+no `can_id` needed — `VESC("tcp://<esp32-ip>")`. Firmware, wiring, and the
+isolation rationale live in [esp32_bridge/](esp32_bridge/).
+
+The serial path is unchanged: `VESC("/dev/ttyACM0")`. Verified end-to-end against
+a VESC Express T (FW 6.06) + VESC FW 5.2 over CAN: `bench_check.py tcp://<ip> 100`
+11/11, GetValues round-trip median ~21 ms over double-hop WiFi (p95 ~110 ms —
+budget for jitter, the driver drops stale responses and keys replies by command id).
 
 ## Documentation
 For the latest version of PyVESC's documentation [Read The Docs](http://pyvesc.readthedocs.io/en/latest/)

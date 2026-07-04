@@ -1,4 +1,6 @@
 from .protocol.interface import encode_request, encode, decode
+from .protocol.packet import codec as vesc_packet_codec
+from .protocol.base import VESCMessage
 from .transport import TCPTransport
 from .messages.getters import GetVersion, GetMotorConfig, GetAppConfig, GetValues
 from .messages.setters import (
@@ -23,7 +25,8 @@ read_lock = threading.Lock()
 
 
 class VESC(object):
-    def __init__(self, serial_port, has_sensor=False, start_heartbeat=True, baudrate=115200, timeout=0.05):
+    def __init__(self, serial_port, has_sensor=False, start_heartbeat=True, baudrate=115200, timeout=0.05,
+                 can_id=None):
         """
         :param serial_port: Serial device to use for communication (i.e. "COM3" or "/dev/tty.usbmodem0"),
                             or the address of a TCP<->UART bridge as "tcp://host[:port]"
@@ -33,7 +36,13 @@ class VESC(object):
                                 alive.
         :param baudrate: baudrate for the serial communication. Ignored for TCP (the bridge fixes the UART baudrate).
         :param timeout: timeout for the serial/socket communication
+        :param can_id: Default CAN target for every command and getter. Set this when the device
+                       we connect to is not the motor controller itself but a bridge on its CAN bus
+                       (e.g. a VESC Express: connect tcp://<express-ip>, can_id=<controller id>).
+                       Individual setter calls can still override with their own can_id kwarg.
         """
+
+        self.can_id = can_id
 
         if isinstance(serial_port, str) and serial_port.startswith('tcp://'):
             self.serial_port = TCPTransport.from_url(serial_port, timeout=timeout)
@@ -42,11 +51,11 @@ class VESC(object):
                 raise ImportError("Need to install pyserial in order to use the VESCMotor class over serial.")
             self.serial_port = serial.Serial(port=serial_port, baudrate=baudrate, timeout=timeout)
         if has_sensor:
-            self.serial_port.write(encode(SetRotorPositionMode(SetRotorPositionMode.DISP_POS_OFF)))
+            self.serial_port.write(encode(SetRotorPositionMode(SetRotorPositionMode.DISP_POS_OFF, can_id=can_id)))
 
         # heartbeat messages sent every cycle; forwarded CAN targets are appended
         # via start_heartbeat(can_id=...)
-        self.alive_msgs = [encode(Alive())]
+        self.alive_msgs = [encode(Alive(can_id=can_id))]
 
         self.heart_beat_thread = threading.Thread(target=self._heartbeat_cmd_func)
         self._stop_heartbeat = threading.Event()
@@ -62,9 +71,10 @@ class VESC(object):
         # self._message_monitor_thread.start()
 
         # store message info for getting values so it doesn't need to calculate it every time
-        msg = GetValues()
+        msg = GetValues(can_id=can_id)
         self._get_values_msg = encode_request(msg)
         self._get_values_msg_expected_length = msg._recv_full_msg_size
+        self._get_values_msg_id = msg.id
 
     def __enter__(self):
         return self
@@ -76,8 +86,8 @@ class VESC(object):
                 self.serial_port.flush()
                 self.serial_port.close()
         except Exception as e:
-            logging.error("Error closing serial port: ", e)
-            logging.error("This is likely due to the motor being disconnected before the connection could be closed.")
+            logger.error("Error closing serial port: {}".format(e))
+            logger.error("This is likely due to the motor being disconnected before the connection could be closed.")
 
     def _message_monitor(self):
         """
@@ -122,7 +132,8 @@ class VESC(object):
             except Exception as e:
                 logger.error("Error stopping heartbeat: {}".format(e))
 
-    def write(self, data, num_read_bytes=None, is_heartbeat=False, expect_string=False, max_wait=0.5):
+    def write(self, data, num_read_bytes=None, is_heartbeat=False, expect_string=False, max_wait=0.5,
+              expected_msg_id=None):
         """
         A write wrapper function implemented like this to try and make it easier to incorporate other communication
         methods than UART in the future.
@@ -131,22 +142,34 @@ class VESC(object):
         :param is_heartbeat: whether or not this is a heartbeat message, can be used for filtering debug prints
         :param expect_string: whether or not to expect a string response
         :param max_wait: overall deadline in seconds for the response
+        :param expected_msg_id: command id the response must carry; other frames are discarded
         :return: decoded response from buffer
         """
+        if num_read_bytes is not None:
+            # a response is expected: drop stale responses that piled up during a
+            # link stall, so this request cannot be answered by old data
+            with read_lock:
+                stale = self.serial_port.in_waiting
+                if stale:
+                    logger.debug("Discarding {} stale bytes before request".format(stale))
+                    self.serial_port.read(stale)
         try:
             self.serial_port.write(data)
         except Exception as e:
-            logging.error("Error writing to serial port: ", e)
+            logger.error("Error writing to serial port: {}".format(e))
         if not is_heartbeat:
             logging.debug("Data sent: {}".format(data))
         if num_read_bytes is not None:
-            return self.read(num_read_bytes, expect_string=expect_string, max_wait=max_wait)
+            return self.read(num_read_bytes, expect_string=expect_string, max_wait=max_wait,
+                             expected_msg_id=expected_msg_id)
 
-    def read(self, num_read_bytes=None, timeout=0.1, expect_string=False, expect_anything=True, max_wait=0.5):
+    def read(self, num_read_bytes=None, timeout=0.1, expect_string=False, expect_anything=True, max_wait=0.5,
+             expected_msg_id=None):
         """
         Read a response from the transport.
 
-        Fixed-size responses return as soon as one complete frame decodes.
+        Fixed-size responses return as soon as a frame decodes; if a link stall
+        delivered several frames in one burst, the newest matching frame wins.
         String responses (terminal output, config reads) can span multiple
         frames, so they are collected until the line goes quiet for `timeout`
         seconds. Either way `max_wait` bounds the total time so a dead link
@@ -158,9 +181,12 @@ class VESC(object):
         :param expect_string: whether the response may span multiple frames
         :param expect_anything: if False, return None as soon as the line is found idle
         :param max_wait: overall deadline in seconds for the response
+        :param expected_msg_id: command id the response must carry (ignored for strings);
+                                None accepts any frame
         :return: decoded response, or None if nothing valid arrived in time
         """
         payload = b''
+        match = None
 
         with read_lock:
             deadline = time.time() + max_wait
@@ -171,18 +197,34 @@ class VESC(object):
                     payload += self.serial_port.read(waiting)
                     t_quiet = time.time()
                     if not expect_string:
-                        # a fixed-size response is a single frame: return the moment it decodes
-                        response, consumed, msg_payload = decode(payload, recv=True)
-                        if response is not None:
-                            logging.debug("Data response: {}".format(msg_payload))
-                            return response
-                elif not payload and not expect_anything:
+                        # unframe everything available and keep the newest matching frame
+                        while True:
+                            frame_payload, consumed = vesc_packet_codec.unframe(payload)
+                            if consumed == 0:
+                                break
+                            payload = payload[consumed:]
+                            if frame_payload is None:
+                                continue
+                            if expected_msg_id is None or frame_payload[0] == expected_msg_id:
+                                match = frame_payload
+                            else:
+                                logger.debug(
+                                    "Ignoring frame with command id {} while waiting for {}".format(
+                                        frame_payload[0], expected_msg_id))
+                        # only return once the burst is fully consumed, so a stale
+                        # frame can't win over a fresher one right behind it
+                        if match is not None and not payload:
+                            return VESCMessage.unpack(match, unpack_send_fields=False)
+                elif not payload and not expect_anything and match is None:
                     # just probing the line, don't wait for a response
                     return None
                 elif t_quiet is not None and time.time() - t_quiet > timeout:
                     # multi-frame response finished (line went quiet)
                     break
                 time.sleep(0.01)
+
+        if not expect_string:
+            return VESCMessage.unpack(match, unpack_send_fields=False) if match is not None else None
 
         response, consumed, msg_payload = decode(payload, recv=True)
         logging.debug("Data response: {}".format(msg_payload))
@@ -252,6 +294,7 @@ class VESC(object):
         :param new_rpm: new rpm value
         :param kwargs: optional can_id to forward the command over CAN
         """
+        kwargs.setdefault('can_id', self.can_id)
         self.write(encode(SetRPM(new_rpm, **kwargs)))
 
     def set_current(self, new_current, **kwargs):
@@ -259,6 +302,7 @@ class VESC(object):
         :param new_current: new current in amps for the motor
         :param kwargs: optional can_id to forward the command over CAN
         """
+        kwargs.setdefault('can_id', self.can_id)
         self.write(encode(SetCurrent(new_current, **kwargs)))
 
     def set_duty_cycle(self, new_duty_cycle, **kwargs):
@@ -266,6 +310,7 @@ class VESC(object):
         :param new_duty_cycle: Value of duty cycle to be set (fraction, range [-1, 1]).
         :param kwargs: optional can_id to forward the command over CAN
         """
+        kwargs.setdefault('can_id', self.can_id)
         self.write(encode(SetDutyCycle(new_duty_cycle, **kwargs)))
 
     def set_servo(self, new_servo_pos, **kwargs):
@@ -273,17 +318,19 @@ class VESC(object):
         :param new_servo_pos: New servo position. valid range [0, 1]
         :param kwargs: optional can_id to forward the command over CAN
         """
+        kwargs.setdefault('can_id', self.can_id)
         self.write(encode(SetServoPosition(new_servo_pos, **kwargs)))
 
     def get_measurements(self):
         """
         :return: A msg object with attributes containing the measurement values
         """
-        return self.write(self._get_values_msg, num_read_bytes=self._get_values_msg_expected_length)
+        return self.write(self._get_values_msg, num_read_bytes=self._get_values_msg_expected_length,
+                          expected_msg_id=self._get_values_msg_id)
 
     def get_firmware_version(self):
-        msg = GetVersion()
-        return self.write(encode_request(msg), num_read_bytes=msg._recv_full_msg_size)
+        msg = GetVersion(can_id=self.can_id)
+        return self.write(encode_request(msg), num_read_bytes=msg._recv_full_msg_size, expected_msg_id=msg.id)
 
     def get_rpm(self):
         """
@@ -320,37 +367,38 @@ class VESC(object):
         Erase app data
         """
         # TODO: Revert this to actual fw size
-        msg = EraseNewApp(fw_size)
+        msg = EraseNewApp(fw_size, can_id=self.can_id)
         # flash erase can take several seconds before the VESC acks
-        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=30.0)
+        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=30.0,
+                          expected_msg_id=msg.id)
 
     def reboot(self):
         """
         Reboot VESC
         """
-        msg = Reboot()
+        msg = Reboot(can_id=self.can_id)
         return str(self.write(encode_request(msg), num_read_bytes=msg._recv_full_msg_size))
 
     def fw_write_new_app_data(self, offset, data):
         """
         Write new app data
         """
-        msg = WriteNewAppData(offset, data)
-        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=5.0)
+        msg = WriteNewAppData(offset, data, can_id=self.can_id)
+        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=5.0, expected_msg_id=msg.id)
 
     def fw_write_new_app_data_lzo(self, offset, data):
         """
         Write new app data
         """
-        msg = WriteNewAppDataLZO(offset, data)
-        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=5.0)
+        msg = WriteNewAppDataLZO(offset, data, can_id=self.can_id)
+        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=5.0, expected_msg_id=msg.id)
 
     def fw_jump_to_bootloader(self):
         """
         Jump to bootloader
         set number of read bytes to None as we don't expect a response
         """
-        msg = JumpToBootloader()
+        msg = JumpToBootloader(can_id=self.can_id)
         # stop heartbeat, as we are about to reset the device
         self.stop_heartbeat()
 
@@ -360,14 +408,14 @@ class VESC(object):
         """
         Send terminal command
         """
-        msg = TerminalCmd(cmd)
+        msg = TerminalCmd(cmd, can_id=self.can_id)
         return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, expect_string=True)
 
     def get_motor_configuration(self):
         """
         Get the motor configuration parameters
         """
-        msg = GetMotorConfig()
+        msg = GetMotorConfig(can_id=self.can_id)
         res = self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, expect_string=True)
         return res
 
@@ -375,7 +423,7 @@ class VESC(object):
         """
         Set the motor configuration parameters
         """
-        msg = SetMotorConfig(data)
+        msg = SetMotorConfig(data, can_id=self.can_id)
         res = self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, expect_string=True)
         return res
 
@@ -383,7 +431,7 @@ class VESC(object):
         """
         Get the app configuration parameters
         """
-        msg = GetAppConfig()
+        msg = GetAppConfig(can_id=self.can_id)
         res = self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, expect_string=True)
         return res
 
@@ -391,6 +439,6 @@ class VESC(object):
         """
         Set the app configuration parameters
         """
-        msg = SetAppConfig(data)
+        msg = SetAppConfig(data, can_id=self.can_id)
         res = self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, expect_string=True)
         return res

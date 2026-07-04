@@ -549,3 +549,48 @@ class TestTCPTransport(TestCase):
             reply = vesc.write(b'\x00', num_read_bytes=GetRotorPosition._recv_full_msg_size)
             self.assertIsNotNone(reply)
             self.assertAlmostEqual(reply.rotor_pos, 123.456)
+
+    def test_stale_burst_newest_matching_frame_wins(self):
+        """
+        A WiFi stall can deliver several buffered responses in one burst
+        (observed on VESC Express hardware). The read must skip frames with
+        the wrong command id and return the newest matching one.
+        """
+        import struct
+        from pyvesc.VESC import VESC
+        from pyvesc.messages.getters import GetRotorPosition, GetValues
+        from pyvesc.protocol.packet.codec import frame
+
+        decoy = frame(struct.pack('>Bi', GetValues.id, 999))
+        stale = frame(struct.pack('>Bi', GetRotorPosition.id, 11100000))
+        fresh = frame(struct.pack('>Bi', GetRotorPosition.id, 22200000))
+
+        def handler(conn):
+            conn.recv(64)
+            conn.sendall(decoy + stale + fresh)  # one burst
+            conn.recv(64)
+
+        port = self._start_server(handler)
+        with VESC('tcp://127.0.0.1:{}'.format(port), start_heartbeat=False) as vesc:
+            reply = vesc.write(b'\x00', num_read_bytes=GetRotorPosition._recv_full_msg_size,
+                               expected_msg_id=GetRotorPosition.id)
+            self.assertIsNotNone(reply)
+            self.assertAlmostEqual(reply.rotor_pos, 222.0)
+
+    def test_default_can_id_forwards_commands(self):
+        """
+        VESC(can_id=N) must wrap requests in COMM_FORWARD_CAN so they reach a
+        motor controller behind a bridge (e.g. VESC Express) on its CAN bus.
+        """
+        from pyvesc.VESC import VESC
+        from pyvesc.messages import VedderCmd
+        from pyvesc.messages.getters import GetValues
+
+        def handler(conn):
+            conn.recv(64)
+
+        port = self._start_server(handler)
+        with VESC('tcp://127.0.0.1:{}'.format(port), start_heartbeat=False, can_id=100) as vesc:
+            # frame: 0x02, length, payload...; payload = [COMM_FORWARD_CAN, can_id, cmd]
+            payload = vesc._get_values_msg[2:-3]
+            self.assertEqual(list(payload), [VedderCmd.COMM_FORWARD_CAN, 100, GetValues.id])
