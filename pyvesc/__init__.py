@@ -5,3 +5,4 @@ if sys.version_info < (3, 6):
 from .protocol.interface import encode, encode_request, decode
 from .messages import *
 from .VESC import VESC
+from .transport import TCPTransport

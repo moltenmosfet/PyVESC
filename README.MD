@@ -22,6 +22,19 @@ that PyVESC is:
 - Implements a number of common-error catching exceptions to speed up your
   development
 
+## TCP bridge support (this fork)
+`VESC()` accepts a `tcp://host[:port]` address (default port 65102) in place of a
+serial device, for driving a VESC through a TCP↔UART bridge — galvanic isolation
+from high-power test rigs:
+
+```python
+with VESC("tcp://192.168.1.50") as vesc:      # ESP32 bridge or VESC Express
+    print(vesc.get_measurements().v_in)
+```
+
+Bridge firmware for a classic ESP32, wiring, and the isolation rationale live in
+[esp32_bridge/](esp32_bridge/). The serial path is unchanged: `VESC("/dev/ttyACM0")`.
+
 ## Documentation
 For the latest version of PyVESC's documentation [Read The Docs](http://pyvesc.readthedocs.io/en/latest/)
 

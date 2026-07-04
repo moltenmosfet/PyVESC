@@ -10,6 +10,8 @@ Verifies on real hardware:
      SetCurrent(0), SetCurrentBrake(0), SetHandbrake(0), SetDutyCycle(0), SetRPM(0)
 
 Usage: ./.venv/bin/python bench_check.py [port]
+  port: serial device (default /dev/ttyACM0) or a TCP bridge address
+        like tcp://192.168.1.50 (see esp32_bridge/)
 """
 
 import sys

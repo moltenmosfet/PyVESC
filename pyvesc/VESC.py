@@ -1,4 +1,5 @@
 from .protocol.interface import encode_request, encode, decode
+from .transport import TCPTransport
 from .messages.getters import GetVersion, GetMotorConfig, GetAppConfig, GetValues
 from .messages.setters import (
     SetMotorConfig, SetAppConfig, SetRPM, SetCurrent, SetDutyCycle,
@@ -24,18 +25,22 @@ read_lock = threading.Lock()
 class VESC(object):
     def __init__(self, serial_port, has_sensor=False, start_heartbeat=True, baudrate=115200, timeout=0.05):
         """
-        :param serial_port: Serial device to use for communication (i.e. "COM3" or "/dev/tty.usbmodem0")
+        :param serial_port: Serial device to use for communication (i.e. "COM3" or "/dev/tty.usbmodem0"),
+                            or the address of a TCP<->UART bridge as "tcp://host[:port]"
+                            (default port 65102, e.g. "tcp://192.168.1.50" for an ESP32 bridge)
         :param has_sensor: Whether or not the bldc motor is using a hall effect sensor
         :param start_heartbeat: Whether or not to automatically start the heartbeat thread that will keep commands
                                 alive.
-        :param baudrate: baudrate for the serial communication. Shouldn't need to change this.
-        :param timeout: timeout for the serial communication
+        :param baudrate: baudrate for the serial communication. Ignored for TCP (the bridge fixes the UART baudrate).
+        :param timeout: timeout for the serial/socket communication
         """
 
-        if serial is None:
-            raise ImportError("Need to install pyserial in order to use the VESCMotor class.")
-
-        self.serial_port = serial.Serial(port=serial_port, baudrate=baudrate, timeout=timeout)
+        if isinstance(serial_port, str) and serial_port.startswith('tcp://'):
+            self.serial_port = TCPTransport.from_url(serial_port, timeout=timeout)
+        else:
+            if serial is None:
+                raise ImportError("Need to install pyserial in order to use the VESCMotor class over serial.")
+            self.serial_port = serial.Serial(port=serial_port, baudrate=baudrate, timeout=timeout)
         if has_sensor:
             self.serial_port.write(encode(SetRotorPositionMode(SetRotorPositionMode.DISP_POS_OFF)))
 
@@ -117,7 +122,7 @@ class VESC(object):
             except Exception as e:
                 logger.error("Error stopping heartbeat: {}".format(e))
 
-    def write(self, data, num_read_bytes=None, is_heartbeat=False, expect_string=False):
+    def write(self, data, num_read_bytes=None, is_heartbeat=False, expect_string=False, max_wait=0.5):
         """
         A write wrapper function implemented like this to try and make it easier to incorporate other communication
         methods than UART in the future.
@@ -125,7 +130,7 @@ class VESC(object):
         :param num_read_bytes: number of bytes to read for decoding response
         :param is_heartbeat: whether or not this is a heartbeat message, can be used for filtering debug prints
         :param expect_string: whether or not to expect a string response
-        :param expect_anything: whether or not to expect any response
+        :param max_wait: overall deadline in seconds for the response
         :return: decoded response from buffer
         """
         try:
@@ -135,40 +140,49 @@ class VESC(object):
         if not is_heartbeat:
             logging.debug("Data sent: {}".format(data))
         if num_read_bytes is not None:
-            return self.read(num_read_bytes, expect_string=expect_string)
+            return self.read(num_read_bytes, expect_string=expect_string, max_wait=max_wait)
 
-    def read(self, num_read_bytes, timeout=0.01, expect_string=False, expect_anything=True):
-        response = None
+    def read(self, num_read_bytes=None, timeout=0.1, expect_string=False, expect_anything=True, max_wait=0.5):
+        """
+        Read a response from the transport.
+
+        Fixed-size responses return as soon as one complete frame decodes.
+        String responses (terminal output, config reads) can span multiple
+        frames, so they are collected until the line goes quiet for `timeout`
+        seconds. Either way `max_wait` bounds the total time so a dead link
+        cannot hang the caller — important when driving a dyno over WiFi.
+
+        :param num_read_bytes: expected payload size; kept for API compatibility, the exit
+                               condition is a successful decode rather than a byte count
+        :param timeout: quiet-time in seconds that ends a multi-frame string read
+        :param expect_string: whether the response may span multiple frames
+        :param expect_anything: if False, return None as soon as the line is found idle
+        :param max_wait: overall deadline in seconds for the response
+        :return: decoded response, or None if nothing valid arrived in time
+        """
         payload = b''
-        last_payload_len = 0
-        t_start = None
-
-        # allow more time for parsing string of unknown length
-        if expect_string:
-            timeout = 0.1
 
         with read_lock:
-            while True:
-                time.sleep(0.01)
-
-                # first data received
-                if len(payload) > 0 and last_payload_len == 0 or len(payload) > 0 and t_start is None:
-                    t_start = time.time()
-
-                # if data stops for a long time
-                if last_payload_len == len(payload):
-                    if t_start is not None:
-                        if time.time() - t_start > timeout:
-                            break
-
-                # read in data gradually to ensure buffer doesn't fill
-                payload += self.serial_port.read(self.serial_port.in_waiting)
-
-                last_payload_len = len(payload)
-
-                # if we are just probing the serial line, exit early as we are not waiting for a response
-                if len(payload) == 0 and not expect_anything:
+            deadline = time.time() + max_wait
+            t_quiet = None
+            while time.time() < deadline:
+                waiting = self.serial_port.in_waiting
+                if waiting:
+                    payload += self.serial_port.read(waiting)
+                    t_quiet = time.time()
+                    if not expect_string:
+                        # a fixed-size response is a single frame: return the moment it decodes
+                        response, consumed, msg_payload = decode(payload, recv=True)
+                        if response is not None:
+                            logging.debug("Data response: {}".format(msg_payload))
+                            return response
+                elif not payload and not expect_anything:
+                    # just probing the line, don't wait for a response
                     return None
+                elif t_quiet is not None and time.time() - t_quiet > timeout:
+                    # multi-frame response finished (line went quiet)
+                    break
+                time.sleep(0.01)
 
         response, consumed, msg_payload = decode(payload, recv=True)
         logging.debug("Data response: {}".format(msg_payload))
@@ -307,7 +321,8 @@ class VESC(object):
         """
         # TODO: Revert this to actual fw size
         msg = EraseNewApp(fw_size)
-        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size)
+        # flash erase can take several seconds before the VESC acks
+        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=30.0)
 
     def reboot(self):
         """
@@ -321,14 +336,14 @@ class VESC(object):
         Write new app data
         """
         msg = WriteNewAppData(offset, data)
-        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size)
+        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=5.0)
 
     def fw_write_new_app_data_lzo(self, offset, data):
         """
         Write new app data
         """
         msg = WriteNewAppDataLZO(offset, data)
-        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size)
+        return self.write(encode(msg), num_read_bytes=msg._recv_full_msg_size, max_wait=5.0)
 
     def fw_jump_to_bootloader(self):
         """

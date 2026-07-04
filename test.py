@@ -425,3 +425,127 @@ class TestInterface(TestCase):
         self.verify_encode_decode(test_message2)
         self.verify_encode_decode(test_message3)
         self.verify_encode_decode(test_message4)
+
+
+class TestTCPTransport(TestCase):
+    """
+    Tests for the TCP<->UART bridge transport, using loopback servers that
+    stand in for the ESP32 bridge + VESC.
+    """
+
+    def _start_server(self, handler):
+        """
+        Start a single-connection TCP server on an ephemeral port. `handler`
+        runs in a thread with the accepted connection. Returns the port.
+        """
+        import socket
+        import threading
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(('127.0.0.1', 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def run():
+            conn, _ = srv.accept()
+            try:
+                handler(conn)
+            finally:
+                conn.close()
+                srv.close()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 2.0)
+        return port
+
+    def test_from_url(self):
+        from pyvesc.transport import TCPTransport
+        with self.assertRaises(ValueError):
+            TCPTransport.from_url('/dev/ttyACM0')
+        with self.assertRaises(ValueError):
+            TCPTransport.from_url('http://host:1')
+        # reachability isn't needed to check URL parsing: connection refused
+        # on loopback proves host/port were parsed and used
+        with self.assertRaises(ConnectionError):
+            TCPTransport.from_url('tcp://127.0.0.1:1', connect_timeout=0.2)
+
+    def test_write_read_roundtrip(self):
+        import threading
+        import time
+        from pyvesc.transport import TCPTransport
+
+        got = {}
+        request_seen = threading.Event()
+
+        def handler(conn):
+            got['request'] = conn.recv(64)
+            conn.sendall(b'\x11\x22\x33')
+            request_seen.set()
+            # hold the connection open while the client reads
+            conn.recv(64)
+
+        port = self._start_server(handler)
+        transport = TCPTransport('127.0.0.1', port)
+        self.addCleanup(transport.close)
+        transport.write(b'ping')
+        self.assertTrue(request_seen.wait(2.0))
+        self.assertEqual(got['request'], b'ping')
+
+        deadline = time.time() + 2.0
+        while transport.in_waiting < 3 and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(transport.in_waiting, 3)
+        self.assertEqual(transport.read(2), b'\x11\x22')
+        self.assertEqual(transport.read(2), b'\x33')
+        transport.close()
+        self.assertFalse(transport.is_open)
+
+    def test_peer_close_drains_then_raises(self):
+        import time
+        from pyvesc.transport import TCPTransport
+
+        def handler(conn):
+            conn.sendall(b'tail')
+            # returning closes the connection immediately
+
+        port = self._start_server(handler)
+        transport = TCPTransport('127.0.0.1', port)
+        self.addCleanup(transport.close)
+
+        # buffered bytes must remain readable after the peer closes
+        deadline = time.time() + 2.0
+        payload = b''
+        while len(payload) < 4 and time.time() < deadline:
+            try:
+                payload += transport.read(transport.in_waiting)
+            except ConnectionError:
+                break
+            time.sleep(0.01)
+        self.assertEqual(payload, b'tail')
+
+        # once drained, the dead link must surface loudly
+        with self.assertRaises(ConnectionError):
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                transport.in_waiting
+                time.sleep(0.01)
+
+    def test_vesc_over_tcp(self):
+        import struct
+        from pyvesc.VESC import VESC
+        from pyvesc.messages.getters import GetRotorPosition
+        from pyvesc.protocol.packet.codec import frame
+
+        # framed GetRotorPosition response: rotor_pos field scaled by 100000
+        response = frame(struct.pack('>Bi', GetRotorPosition.id, 12345600))
+
+        def handler(conn):
+            conn.recv(64)  # the request
+            conn.sendall(response)
+            conn.recv(64)  # hold open until the client disconnects
+
+        port = self._start_server(handler)
+        with VESC('tcp://127.0.0.1:{}'.format(port), start_heartbeat=False) as vesc:
+            reply = vesc.write(b'\x00', num_read_bytes=GetRotorPosition._recv_full_msg_size)
+            self.assertIsNotNone(reply)
+            self.assertAlmostEqual(reply.rotor_pos, 123.456)
