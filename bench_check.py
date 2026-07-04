@@ -79,8 +79,10 @@ def main():
             send()
             time.sleep(0.2)
             m = vesc.get_measurements()
+            # duty threshold: open output floats with ±0.015 of noise (observed);
+            # a real actuation would read far above 0.02
             check(f"{name} accepted",
-                  m is not None and m.mc_fault_code == FAULT_NONE and abs(m.duty_cycle_now) < 0.01,
+                  m is not None and m.mc_fault_code == FAULT_NONE and abs(m.duty_cycle_now) < 0.02,
                   f"duty={m.duty_cycle_now:.3f} fault={m.mc_fault_code!r}" if m else "no telemetry")
 
         # release control before disconnect
