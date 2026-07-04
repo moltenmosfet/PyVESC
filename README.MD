@@ -78,11 +78,19 @@ Smoke-test a rig before trusting it (safe with no motor attached):
   (default 1000 ms) cuts output when the link dies. That chain is the safety
   story for wireless control — leave the timeout at its default and fix flaky
   links instead of raising it.
-- **VESC Express:** find the controller's CAN ID in VESC Tool's CAN device list
-  or via `COMM_PING_CAN`. The Express serves one TCP client at a time and takes
-  ~2 s to free the slot after a disconnect, so don't hammer reconnects. Power
-  it from the CAN connector — a USB cable to the laptop re-creates the exact
-  ground path the wireless link exists to break.
+- **Getting the TCP link — use a VESC Express.** The
+  [VESC Express](https://github.com/vedderb/vesc_express) is the VESC project's
+  official ESP32-C3 WiFi/BLE/CAN module (sold as Vesc Express on aliexpress or via Trampa, etc..);
+  it exposes the TCP server this driver speaks, on port 65102. One-time
+  setup: wire it to the motor controller's CAN port, connect to it with VESC Tool
+  (USB or BLE), and under App Settings → WiFi set station mode with your network's
+  credentials. Give its MAC a DHCP reservation in the router so the IP survives
+  reboots. Then `VESC("tcp://<express-ip>", can_id=<controller id>)`.
+- **VESC Express quirks:** find the controller's CAN ID in VESC Tool's CAN device
+  list or via `COMM_PING_CAN`. The Express serves one TCP client at a time and
+  takes ~2 s to free the slot after a disconnect, so don't hammer reconnects.
+  Power it from the CAN connector — a USB cable to the laptop re-creates the
+  exact ground path the wireless link exists to break.
 
 ## Verified hardware status
 
