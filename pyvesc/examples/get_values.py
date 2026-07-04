@@ -1,5 +1,5 @@
 import pyvesc
-from pyvesc.VESC.messages import GetValues, SetRPM, SetCurrent, SetRotorPositionMode, GetRotorPosition
+from pyvesc.messages import GetValues, SetRPM, SetCurrent, SetRotorPositionMode, GetRotorPosition
 import serial
 import time
 
@@ -24,20 +24,10 @@ def get_values_example():
 
                 # Check if there is enough data back for a measurement
                 if ser.in_waiting > 61:
-                    (response, consumed) = pyvesc.decode(ser.read(61))
+                    (response, consumed, _) = pyvesc.decode(ser.read(61))
 
                     # Print out the values
-                    try:
-                        print(response.rpm)
-
-                    except:
-                        # ToDo: Figure out how to isolate rotor position and other sensor data
-                        #       in the incoming datastream
-                        #try:
-                        #    print(response.rotor_pos)
-                        #except:
-                        #    pass
-                        pass
+                    print(response.rpm)
 
                 time.sleep(0.1)
 

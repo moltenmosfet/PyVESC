@@ -163,9 +163,9 @@ class TestPacket(TestCase):
         # make a good packet
         test_payload = b'Te!'
         good_packet = b'\x02\x03Te!B\x92\x03'
-        packet_to_recover = b'\x02\x04!\xe1$ 8\xbb\x03' # goal is to recover this packet
+        packet_to_recover = b'\x02\x04!\xe1$ 8\xbb\x03'  # goal is to recover this packet
         payload_to_recover = b'!\xe1$ '
-        after_goal = b'\x05\x09\x01' # mimic another corrupt packet after
+        after_goal = b'\x05\x09\x01'  # mimic another corrupt packet after
         corrupt_packets = []
         # corrupt first byte
         corrupt = b'\x01\x03Te!B\x92\x03'
@@ -202,6 +202,7 @@ class TestPacket(TestCase):
         self.assertEqual(parsed, test_payload)
         self.assertEqual(out_buffer, b'')
 
+
 class TestMsg(TestCase):
     def setUp(self):
         import copy
@@ -218,15 +219,15 @@ class TestMsg(TestCase):
         payload_bytestring = VESCMessage.pack(msg)
         parsed_msg = VESCMessage.unpack(payload_bytestring)
         self.assertEqual(parsed_msg.id, msg.id)
-        for name in [names[0] for names in msg.fields]:
+        for name in [names[0] for names in msg.send_fields]:
             self.assertEqual(getattr(parsed_msg, name), getattr(msg, name))
 
     def test_single_message(self):
         from pyvesc.protocol.base import VESCMessage
 
         class TestMsg1(metaclass=VESCMessage):
-            id = 0x12
-            fields = [
+            id = 0xE0
+            send_fields = [
                 ('f1', 'B'),
                 ('f2', 'H'),
                 ('f3', 'i'),
@@ -242,8 +243,8 @@ class TestMsg(TestCase):
         from pyvesc.protocol.base import VESCMessage
 
         class testMsg1(metaclass=VESCMessage):
-            id = 0x45
-            fields = [
+            id = 0xE1
+            send_fields = [
                 ('f1', 'B'),
                 ('f2', 'H'),
                 ('f3', 'i'),
@@ -253,22 +254,22 @@ class TestMsg(TestCase):
             ]
 
         class testMsg2(metaclass=VESCMessage):
-            id = 0x19
-            fields = [
+            id = 0xE2
+            send_fields = [
                 ('f1', 'B'),
                 ('f2', 'B'),
             ]
 
         class testMsg3(metaclass=VESCMessage):
-            id = 0x11
-            fields = [
+            id = 0xE3
+            send_fields = [
                 ('f1', 'i'),
                 ('f2', 'i'),
             ]
 
         class testMsg4(metaclass=VESCMessage):
-            id = 0x24
-            fields = [
+            id = 0xE4
+            send_fields = [
                 ('f1', 'i'),
                 ('f2', 's'),
                 ('f3', 'i'),
@@ -293,16 +294,16 @@ class TestMsg(TestCase):
 
         # try to make two messages with the same ID
         class testMsg1(metaclass=VESCMessage):
-            id = 0x01
-            fields = [
+            id = 0xE5
+            send_fields = [
                 ('f1', 'H'),
                 ('f2', 'H'),
             ]
         caught = False
         try:
             class testMsg2(metaclass=VESCMessage):
-                id = 0x01
-                fields = [
+                id = 0xE5
+                send_fields = [
                     ('f1', 'B'),
                     ('f2', 'B'),
                 ]
@@ -314,8 +315,8 @@ class TestMsg(TestCase):
         caught = False
         try:
             class testMsg4(testMsg1):
-                id = 0x01
-                fields = [
+                id = 0xE6
+                send_fields = [
                     ('f1', 'B'),
                     ('f2', 'B'),
                 ]
@@ -327,8 +328,8 @@ class TestMsg(TestCase):
         caught = False
         try:
             class testMsg7(metaclass=VESCMessage):
-                id = 0x02
-                fields = [
+                id = 0xE7
+                send_fields = [
                     ('f1', 's'),
                     ('f2', 's'),
                 ]
@@ -340,8 +341,8 @@ class TestMsg(TestCase):
         caught = False
         try:
             class testMsg8(metaclass=VESCMessage):
-                id = 0x31
-                fields = [
+                id = 0xE8
+                send_fields = [
                     ('f1', 'p'),
                 ]
         except TypeError as e:
@@ -351,7 +352,7 @@ class TestMsg(TestCase):
         # try to fill a message with the wrong number of arguments
         caught = False
         try:
-            testmessage1 = testMsg1(2, 4, 5) # should be 2 args
+            testmessage1 = testMsg1(2, 4, 5)  # should be 2 args
         except AttributeError as e:
             caught = True
         self.assertTrue(caught)
@@ -369,19 +370,19 @@ class TestInterface(TestCase):
         self._initial_registry = None
 
     def verify_encode_decode(self, msg):
-        import pyvesc
-        encoded = pyvesc.encode(msg)
-        decoded, consumed = pyvesc.decode(encoded)
+        from pyvesc.protocol.interface import encode, decode
+        encoded = encode(msg)
+        decoded, consumed, payload_total = decode(encoded)
         self.assertEqual(consumed, len(encoded))
-        for field in msg._field_names:
+        for field in msg._send_field_names:
             self.assertEqual(getattr(msg, field), getattr(decoded, field))
 
     def test_interface(self):
-        from pyvesc.VESCMotor.messages import VESCMessage
+        from pyvesc.protocol.base import VESCMessage
 
         class testMsg1(metaclass=VESCMessage):
-            id = 0x45
-            fields = [
+            id = 0xE9
+            send_fields = [
                 ('f1', 'B'),
                 ('f2', 'H'),
                 ('f3', 'i'),
@@ -391,22 +392,22 @@ class TestInterface(TestCase):
             ]
 
         class testMsg2(metaclass=VESCMessage):
-            id = 0x19
-            fields = [
+            id = 0xEA
+            send_fields = [
                 ('f1', 'B'),
                 ('f2', 'B'),
             ]
 
         class testMsg3(metaclass=VESCMessage):
-            id = 0x11
-            fields = [
+            id = 0xEB
+            send_fields = [
                 ('f1', 'i'),
                 ('f2', 'i'),
             ]
 
         class testMsg4(metaclass=VESCMessage):
-            id = 0x24
-            fields = [
+            id = 0xEC
+            send_fields = [
                 ('f1', 'i'),
                 ('f2', 's'),
                 ('f3', 'i'),

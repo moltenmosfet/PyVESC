@@ -36,8 +36,8 @@ PyVESC can be used to go from a message (VESCMessage) to a packet (bytes).
 
 .. code-block:: python
 
-  # make a SetDutyCycle message
-  my_msg = pyvesc.SetDutyCycle(1e5)
+  # make a SetDutyCycle message (duty cycle is a fraction in [-1, 1])
+  my_msg = pyvesc.SetDutyCycle(0.5)
   print(my_msg.duty_cycle) # prints value of my_msg.duty_cycle
   my_packet = pyvesc.encode(my_msg)
   # my_packet (type: bytes) can now be sent over your UART connection
@@ -48,7 +48,7 @@ being filled by your UART connection)
 .. code-block:: python
 
   # buff is bytes filled from your UART connection
-  my_msg, consumed = pyvesc.decode(buff)
+  my_msg, consumed, _ = pyvesc.decode(buff)
   buff = buff[consumed:]  # remove consumed bytes from the buffer
   if my_msg:
     print(my_msg.duty_cycle)    # prints value of my_msg.duty_cycle
