@@ -50,16 +50,37 @@ upstream, not this fork.
 - **A request/response path hardened for real WiFi** — stale responses are
   drained before each request, replies are keyed by command id, and every read
   has a deadline so a dead link returns `None` instead of hanging a control loop.
-- **Test tooling** — `bench_check.py` (motor-less hardware smoke test, all
-  commands zero-valued), TCP loopback tests, and an enum-drift guard that checks
-  command ids against the VESC firmware's `datatypes.h`.
+- **Test tooling** — `bench_check.py` (COMM) and `can_bench_check.py` (native
+  CAN) motor-less hardware smoke tests, TCP loopback tests, and live enum-drift
+  guards that check both protocols' ids against the VESC firmware's
+  `datatypes.h`.
 
 ## Quickstart
 
 ```sh
 python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt   # crccheck, pyserial
+./.venv/bin/pip install -r requirements.txt   # crccheck, pyserial, python-can
 ```
+
+### Native CAN (the control-loop path)
+
+```sh
+sudo ip link set can0 up type can bitrate 500000   # after every USB replug
+./.venv/bin/python can_bench_check.py can0         # scans, checks, RTT stats
+```
+
+```python
+from pyvesc.can import VescCanBus, VescCanNode
+
+with VescCanBus(channel="can0") as bus:
+    node = VescCanNode(bus, bus.scan(range(16)).popitem()[0])  # or known id
+    node.conf_current_limits_in(-20.0, 80.0)   # absorption ceiling (RAM only)
+    node.set_current(5.0, off_delay_s=0.2)     # 5 A torque, auto-zero in 200 ms
+    t = node.telemetry                          # push telemetry, never blocks
+    print(t.status1.rpm, t.status4.current_in, t.status5.v_in)
+```
+
+### COMM protocol (the bench-setup path)
 
 Three ways to connect, same API from there on:
 
@@ -96,6 +117,12 @@ Smoke-test a rig before trusting it (safe with no motor attached):
 
 ### Setup notes
 
+- **CAN prerequisites:** enable STATUS messages 1–6 in VESC Tool → App
+  Settings → General (STATUS_5 carries bus voltage + tacho; without it the
+  telemetry snapshot has no `v_in`). Broadcast rate ~50 Hz default — raise it
+  for fast control loops. A dead/unplugged bus jams the socketcan TX queue
+  (qlen 10); `ping()`/`scan()` handle it, but consider
+  `sudo ip link set can0 txqueuelen 1000`.
 - **Failsafe:** the `VESC` class heartbeats at 10 Hz; the VESC's own app timeout
   (default 1000 ms) cuts output when the link dies. That chain is the safety
   story for wireless control — leave the timeout at its default and fix flaky
@@ -139,7 +166,8 @@ sustained high-power regen awaits the rig's dump path.
 ./.venv/bin/python -m unittest test_dyno_commands  # 4Q commands + COMM enum guard
 ./.venv/bin/python -m unittest test_can_frames     # CAN golden bytes + enum guard
 ./.venv/bin/python -m unittest test_can_bus        # CAN bus/node over virtual interface
-./.venv/bin/python bench_check.py [port] [can_id]  # on real hardware
+./.venv/bin/python bench_check.py [port] [can_id]  # COMM path, real hardware
+./.venv/bin/python can_bench_check.py [chan] [id]  # native CAN, real hardware
 ```
 
 ## License & attribution
