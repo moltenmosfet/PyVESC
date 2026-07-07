@@ -120,9 +120,9 @@ Smoke-test a rig before trusting it (safe with no motor attached):
 | --- | --- | --- |
 | USB serial | VESC 6-class, FW 5.2, 12 V bench supply | `bench_check` 11/11 |
 | TCP via VESC Express + CAN | Express T (FW 6.06) on WiFi, VESC FW 5.2 at CAN ID 100 | `bench_check` 11/11; `GetValues` round-trip median ~21 ms, p95 ~110 ms, 0 misses in 100 polls (double-hop WiFi) |
+| **Native CAN (`pyvesc.can`)** | Mini FSESC 6.7 Pro, **FW 7.00**, CAN ID 100, PCAN-USB @ 500k, e-scooter motor | `can_bench_check` 11/11 (STATUS_5 enabled in app config); PING RTT min 0.77 / med 0.99 / p95 1.55 ms; **live drive verified 2026-07-07**: SET_CURRENT tracked 2.00 A and spun the motor; **off-delay auto-zeroed** 0.5 s after a single send; **CONF_CURRENT_LIMITS applied** (5 A request clamped at exactly 2.00 A); SET_RPM held 3978/4000 erpm; broadcast `stop_all` works |
 
-Not yet exercised (needs a motor on the bench): actual spinning, current
-tracking, regen. Every hardware test so far sends zero-valued commands only.
+Still unexercised: regen/braking under load (needs the dyno), STATUS_6.
 
 ## Testing
 
