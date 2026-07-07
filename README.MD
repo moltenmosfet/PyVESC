@@ -122,9 +122,15 @@ Smoke-test a rig before trusting it (safe with no motor attached):
 | TCP via VESC Express + CAN | Express T on WiFi, VESC **FW 7.00** at CAN ID 100 (re-validated 2026-07-07; first pass was FW 5.2) | `bench_check` 11/11 — the FW 5.2-era `GetValues` decode survives 7.00; RTT med 11 ms / p95 173 ms, 0 misses in 30; **motorized**: `SetRPM(4000)` spun the motor over TCP, stop clean |
 | **Native CAN (`pyvesc.can`)** | Mini FSESC 6.7 Pro, **FW 7.00**, CAN ID 100, PCAN-USB @ 500k, e-scooter motor | `can_bench_check` 11/11 (STATUS_5 enabled in app config); PING RTT min 0.77 / med 0.99 / p95 1.55 ms; **live drive verified 2026-07-07**: SET_CURRENT tracked 2.00 A and spun the motor; **off-delay auto-zeroed** 0.5 s after a single send; **CONF_CURRENT_LIMITS applied** (5 A request clamped at exactly 2.00 A); SET_RPM held 3978/4000 erpm; broadcast `stop_all` works |
 
-Both paths are motor-exercised (spin + stop), and all six STATUS broadcasts
-are verified decoding at ~48 Hz on real hardware. Still unexercised:
-regen/braking under load (needs the dyno).
+Both paths are motor-exercised, all six STATUS broadcasts decode at ~48 Hz,
+and **regen is verified using rotor inertia as the load** (2026-07-07,
+motor clamped): `SET_CURRENT_BRAKE` from 9.8k erpm drove `current_in` to
+**−3.3 A into the supply**, tapering with speed; negative `SET_CURRENT`
+braked through zero into reverse drive (true 4-quadrant semantics: current
+sign = torque, not speed); and the **absorption ceiling works** —
+`conf_current_limits_in(-1, 80)` clamped regen at −1.1 A vs −3.3 A
+unclamped. Nothing in the driver stack remains hardware-unverified;
+sustained high-power regen awaits the rig's dump path.
 
 ## Testing
 
