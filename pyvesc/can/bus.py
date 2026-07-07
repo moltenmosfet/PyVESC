@@ -157,11 +157,19 @@ class VescCanBus:
     # --- enumeration -------------------------------------------------------------
 
     def ping(self, controller_id: int, timeout: float = 0.2) -> Optional[int]:
-        """PING one node. Returns its hw_type (0 = VESC) or None on timeout."""
+        """PING one node. Returns its hw_type (0 = VESC) or None on timeout —
+        including when the bus itself is dead (no ACKing node -> the TX queue
+        jams with ENOBUFS; that is 'nobody there', not a crash)."""
         with self._lock:
             self._pongs.pop(controller_id, None)
         deadline = time.monotonic() + timeout
-        self.send(frames.encode_ping(controller_id, HOST_ID))
+        try:
+            self.send(frames.encode_ping(controller_id, HOST_ID))
+        except can.CanOperationError:
+            # TX queue full: frames aren't being ACKed (dead/empty bus).
+            # Wait out the timeout so a scan() backs off instead of spinning.
+            time.sleep(timeout)
+            return None
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
