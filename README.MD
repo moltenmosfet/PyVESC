@@ -9,10 +9,10 @@ Python driver for [VESC](https://vesc-project.com/) motor controllers, two ways 
 
 Forked from [LiamBindle/PyVESC](https://github.com/LiamBindle/PyVESC) with
 [PR #38](https://github.com/LiamBindle/PyVESC/pull/38) (lukedempsey: interface
-rework, firmware flashing, motor/app config) merged. The API has diverged from
-upstream — the original README and the
-[readthedocs documentation](http://pyvesc.readthedocs.io/en/latest/) describe
-upstream, not this fork.
+rework, firmware flashing, motor/app config) merged. **Do not use the
+[readthedocs documentation](http://pyvesc.readthedocs.io/en/latest/)** — it
+describes upstream's API, and the units differ: upstream setters take raw
+protocol integers (milliamps), this fork's take engineering units (amps).
 
 ## What this fork adds
 
