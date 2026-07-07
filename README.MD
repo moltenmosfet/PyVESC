@@ -36,6 +36,11 @@ upstream, not this fork.
       print(absorber.telemetry.status1.rpm, absorber.telemetry.status5.v_in)
   ```
 
+- **COMM-over-CAN tunnel** — `node.comm_request()`, `get_fw_version()`, and
+  full `get_values()` (temps, odometry, **fault codes** — which STATUS
+  broadcasts don't carry) over a CAN-only link, ~4 ms round-trip. Chunked
+  FILL/PROCESS reassembly with CRC per the fw source; replies decode through
+  the existing COMM codec.
 - **Four-quadrant command set**, hardware-verified: `SetCurrent`,
   `SetCurrentBrake`, `SetHandbrake` (added), `SetRPM`, `SetDutyCycle`, all in
   engineering units (amps, electrical rpm, duty fraction). Protocol fixes for

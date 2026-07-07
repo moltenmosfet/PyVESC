@@ -102,3 +102,32 @@ class VescCanNode:
 
     def ping(self, timeout: float = 0.2) -> Optional[int]:
         return self.bus.ping(self.controller_id, timeout=timeout)
+
+    # --- COMM-over-CAN tunnel: the COMM protocol without a serial cable ------
+
+    def comm_request(self, payload: bytes, timeout: float = 0.5) -> Optional[bytes]:
+        """Send an un-framed COMM packet payload over CAN; reply payload or
+        None. Request/response only — for streaming use STATUS broadcasts."""
+        return self.bus.comm_request(self.controller_id, payload, timeout)
+
+    def get_fw_version(self, timeout: float = 0.5) -> Optional[tuple]:
+        """(major, minor) via COMM_FW_VERSION over CAN, or None."""
+        reply = self.comm_request(b'\x00', timeout)  # COMM_FW_VERSION
+        if reply is None or len(reply) < 3 or reply[0] != 0:
+            return None
+        return (reply[1], reply[2])
+
+    def get_values(self, timeout: float = 0.5):
+        """Full COMM GetValues over CAN — the one place FAULT CODES are
+        visible on a CAN-only link (STATUS broadcasts don't carry them).
+        Returns a pyvesc GetValues message (mc_fault_code, temps, odometry,
+        ...) or None. Request/response: poll for health/faults at a few Hz,
+        not in the control loop's hot path."""
+        reply = self.comm_request(b'\x04', timeout)  # COMM_GET_VALUES
+        if reply is None or not reply or reply[0] != 4:
+            return None
+        # Reuse the COMM codec: tunnel payloads are un-framed COMM packets.
+        import pyvesc
+        from pyvesc.protocol.packet.codec import frame
+        msg, _consumed, _payload = pyvesc.decode(frame(reply))
+        return msg

@@ -231,3 +231,47 @@ class TestEnumMatchesFirmware(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestCommTunnelEncode(unittest.TestCase):
+    def test_short_payload_single_frame(self):
+        out = frames.encode_comm_frames(100, 0xFE, b'\x00')  # COMM_FW_VERSION
+        self.assertEqual(len(out), 1)
+        arb, data = out[0]
+        self.assertEqual(arb, (8 << 8) | 100)          # PROCESS_SHORT_BUFFER
+        self.assertEqual(data, bytes([0xFE, 0, 0x00]))
+
+    def test_long_payload_chunked_with_crc(self):
+        payload = bytes(range(20))                      # > 6 -> FILL path
+        out = frames.encode_comm_frames(7, 0xFE, payload)
+        # 20 bytes -> 3 FILL chunks (7+7+6) + PROCESS_RX_BUFFER
+        self.assertEqual(len(out), 4)
+        self.assertEqual(out[0].arbitration_id, (5 << 8) | 7)
+        self.assertEqual(out[0].data, bytes([0]) + payload[0:7])
+        self.assertEqual(out[1].data, bytes([7]) + payload[7:14])
+        self.assertEqual(out[2].data, bytes([14]) + payload[14:20])
+        fin = out[3]
+        self.assertEqual(fin.arbitration_id, (7 << 8) | 7)
+        self.assertEqual(fin.data, struct.pack(
+            '!BBHH', 0xFE, 0, 20, frames.crc16_xmodem(payload)))
+
+    def test_very_long_payload_uses_long_chunks(self):
+        payload = bytes(300)
+        out = frames.encode_comm_frames(7, 0xFE, payload)
+        # offsets 0..252 in 7-byte FILLs (37 frames, ends at 259 > 255? no:
+        # loop takes chunks while i <= 255: last starts at 252 -> covers 259)
+        long_frames = [f for f in out
+                       if f.arbitration_id >> 8 == 6]   # FILL_RX_BUFFER_LONG
+        self.assertTrue(long_frames)
+        off = struct.unpack('!H', long_frames[0].data[:2])[0]
+        self.assertGreater(off, 255)
+        # reassemble everything and confirm byte-exactness
+        buf = bytearray(400)
+        for arb, data in out:
+            pid = arb >> 8
+            if pid == 5:
+                buf[data[0]:data[0] + len(data) - 1] = data[1:]
+            elif pid == 6:
+                o = struct.unpack('!H', data[:2])[0]
+                buf[o:o + len(data) - 2] = data[2:]
+        self.assertEqual(bytes(buf[:300]), payload)

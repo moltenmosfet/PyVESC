@@ -27,7 +27,7 @@ in the VESC documentation):
 
 import struct
 from enum import IntEnum
-from typing import NamedTuple, Optional, Tuple, Union
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 BROADCAST_ID = 0xFF
 
@@ -250,6 +250,51 @@ def encode_ping(controller_id: int, sender_id: int) -> VescFrame:
 def encode_shutdown(controller_id: int) -> VescFrame:
     """Power off (only on hardware with a shutdown circuit; no-op otherwise)."""
     return VescFrame(make_arbitration_id(CanPacketId.SHUTDOWN, controller_id), b'')
+
+
+# --- COMM-over-CAN tunnel (ids 5-8) -------------------------------------------
+# Carries un-framed COMM packets (no start/stop bytes) over CAN — how VESC Tool
+# talks through a bridge, and how a CAN-only host reads fw version and fault
+# codes (STATUS frames don't carry faults). Requests <= 6 bytes ride
+# PROCESS_SHORT_BUFFER; longer ones are chunked via FILL_RX_BUFFER (byte
+# offset, <=255) / FILL_RX_BUFFER_LONG (u16 offset) and finalized by
+# PROCESS_RX_BUFFER carrying [sender, send_flag, len:u16, crc16:u16] with
+# CRC-16/XMODEM over the payload. Wire format from comm_can_send_buffer().
+
+def crc16_xmodem(data: bytes) -> int:
+    from crccheck.crc import CrcXmodem
+    return CrcXmodem().calc(data)
+
+
+def encode_comm_frames(controller_id: int, sender_id: int, payload: bytes,
+                       send_flag: int = 0) -> List[VescFrame]:
+    """Encode one COMM payload for the tunnel; returns the frame sequence to
+    send in order. send_flag 0 = process and reply over CAN to sender_id."""
+    if not payload:
+        raise ValueError("empty COMM payload")
+    if len(payload) <= 6:
+        return [VescFrame(
+            make_arbitration_id(CanPacketId.PROCESS_SHORT_BUFFER, controller_id),
+            bytes([sender_id, send_flag]) + payload)]
+    out = []
+    i = 0
+    while i <= 255 and i < len(payload):          # byte-offset chunks, 7 each
+        chunk = payload[i:i + 7]
+        out.append(VescFrame(
+            make_arbitration_id(CanPacketId.FILL_RX_BUFFER, controller_id),
+            bytes([i]) + chunk))
+        i += len(chunk)
+    while i < len(payload):                        # u16-offset chunks, 6 each
+        chunk = payload[i:i + 6]
+        out.append(VescFrame(
+            make_arbitration_id(CanPacketId.FILL_RX_BUFFER_LONG, controller_id),
+            struct.pack('!H', i) + chunk))
+        i += len(chunk)
+    out.append(VescFrame(
+        make_arbitration_id(CanPacketId.PROCESS_RX_BUFFER, controller_id),
+        struct.pack('!BBHH', sender_id, send_flag, len(payload),
+                    crc16_xmodem(payload))))
+    return out
 
 
 # --- STATUS decoders -----------------------------------------------------------

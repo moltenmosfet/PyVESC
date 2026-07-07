@@ -79,6 +79,11 @@ class VescCanBus:
         self._subscribers: List[Callable[[int, object], None]] = []
         self._pong_event = threading.Event()
         self._pongs: Dict[int, int] = {}  # responder_id -> hw_type
+        # COMM-over-CAN tunnel reply state (one outstanding request at a time)
+        self._comm_lock = threading.Lock()
+        self._comm_buf = bytearray(512)
+        self._comm_reply: Optional[tuple] = None  # (sender_id, payload)
+        self._comm_event = threading.Event()
         self._loggers: List[can.Listener] = []
         self._notifier = can.Notifier(self._bus, [self._on_message])
 
@@ -100,6 +105,10 @@ class VescCanBus:
 
     def _on_message(self, msg: can.Message) -> None:
         if not msg.is_extended_id:
+            return
+        packet_id, addressee = frames.split_arbitration_id(msg.arbitration_id)
+        if addressee == HOST_ID and packet_id in _TUNNEL_IDS:
+            self._on_tunnel_frame(packet_id, bytes(msg.data))
             return
         decoded = frames.decode_frame(msg.arbitration_id, bytes(msg.data))
         if decoded is None:
@@ -125,6 +134,53 @@ class VescCanBus:
 
         for fn in self._subscribers:
             fn(controller_id, obj)
+
+    def _on_tunnel_frame(self, packet_id: int, data: bytes) -> None:
+        """Reassemble COMM-over-CAN replies addressed to HOST_ID. One
+        outstanding request at a time (comm_request holds the lock), so a
+        single buffer suffices."""
+        if packet_id == CanPacketId.PROCESS_SHORT_BUFFER and len(data) >= 3:
+            self._comm_reply = (data[0], bytes(data[2:]))
+            self._comm_event.set()
+        elif packet_id == CanPacketId.FILL_RX_BUFFER and len(data) >= 2:
+            off = data[0]
+            self._comm_buf[off:off + len(data) - 1] = data[1:]
+        elif packet_id == CanPacketId.FILL_RX_BUFFER_LONG and len(data) >= 3:
+            off = (data[0] << 8) | data[1]
+            self._comm_buf[off:off + len(data) - 2] = data[2:]
+        elif packet_id == CanPacketId.PROCESS_RX_BUFFER and len(data) >= 6:
+            sender, _flag = data[0], data[1]
+            length = (data[2] << 8) | data[3]
+            crc = (data[4] << 8) | data[5]
+            payload = bytes(self._comm_buf[:length])
+            if frames.crc16_xmodem(payload) == crc:
+                self._comm_reply = (sender, payload)
+                self._comm_event.set()
+
+    def comm_request(self, controller_id: int, payload: bytes,
+                     timeout: float = 0.5) -> Optional[bytes]:
+        """Send one COMM packet (un-framed payload, e.g. b'\\x00' =
+        COMM_FW_VERSION) over the CAN tunnel; returns the reply payload or
+        None on timeout. Serialized bus-wide: the tunnel has no request ids,
+        so exactly one request may be in flight."""
+        with self._comm_lock:
+            self._comm_reply = None
+            self._comm_event.clear()
+            for frame in frames.encode_comm_frames(controller_id, HOST_ID,
+                                                   payload):
+                self.send(frame)
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._comm_event.wait(remaining)
+                if self._comm_reply is not None:
+                    sender, reply = self._comm_reply
+                    if sender == controller_id:
+                        return reply
+                    self._comm_reply = None   # someone else's frame; keep waiting
+                    self._comm_event.clear()
 
     def telemetry(self, controller_id: int) -> NodeTelemetry:
         """Latest snapshot for a node (empty snapshot if never heard from)."""
@@ -210,6 +266,9 @@ class VescCanBus:
             self._loggers.remove(logger)
         logger.stop()
 
+
+_TUNNEL_IDS = {int(CanPacketId.FILL_RX_BUFFER), int(CanPacketId.FILL_RX_BUFFER_LONG),
+               int(CanPacketId.PROCESS_RX_BUFFER), int(CanPacketId.PROCESS_SHORT_BUFFER)}
 
 _STATUS_SLOTS = {
     Status1: 'status1',

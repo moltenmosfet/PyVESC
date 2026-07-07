@@ -155,5 +155,70 @@ class TestVescCanBus(unittest.TestCase):
             self.assertGreaterEqual(len(lines), 2)
 
 
+
+
+class TunnelVesc(FakeVesc):
+    """FakeVesc + COMM tunnel server: FW_VERSION replies short; 0x42 replies
+    with a 20-byte payload to exercise host-side FILL reassembly."""
+
+    def _run(self):
+        while not self._stop.is_set():
+            msg = self.bus.recv(timeout=0.05)
+            if msg is None or not msg.is_extended_id:
+                continue
+            pid, cid = frames.split_arbitration_id(msg.arbitration_id)
+            if cid != self.controller_id:
+                continue
+            if pid == frames.CanPacketId.PROCESS_SHORT_BUFFER:
+                sender, payload = msg.data[0], bytes(msg.data[2:])
+                if payload[:1] == b'\x00':                    # COMM_FW_VERSION
+                    reply = bytes([0x00, 7, 0])
+                    self._send_short(sender, reply)
+                elif payload[:1] == b'\x42':
+                    reply = bytes([0x42]) + bytes(range(19))  # long reply
+                    self._send_long(sender, reply)
+
+    def _send_short(self, to, payload):
+        self.bus.send(can.Message(
+            arbitration_id=(int(frames.CanPacketId.PROCESS_SHORT_BUFFER) << 8) | to,
+            data=bytes([self.controller_id, 1]) + payload, is_extended_id=True))
+
+    def _send_long(self, to, payload):
+        i = 0
+        while i < len(payload):
+            chunk = payload[i:i + 7]
+            self.bus.send(can.Message(
+                arbitration_id=(int(frames.CanPacketId.FILL_RX_BUFFER) << 8) | to,
+                data=bytes([i]) + chunk, is_extended_id=True))
+            i += len(chunk)
+        self.bus.send(can.Message(
+            arbitration_id=(int(frames.CanPacketId.PROCESS_RX_BUFFER) << 8) | to,
+            data=struct.pack('!BBHH', self.controller_id, 1, len(payload),
+                             frames.crc16_xmodem(payload)), is_extended_id=True))
+
+
+class TestCommTunnel(unittest.TestCase):
+    def setUp(self):
+        self.fake = TunnelVesc(CHANNEL + '_t', controller_id=42)
+        self.host = VescCanBus(bus=can.Bus(interface='virtual',
+                                           channel=CHANNEL + '_t',
+                                           receive_own_messages=True))
+        self.node = VescCanNode(self.host, 42)
+
+    def tearDown(self):
+        self.host.close()
+        self.fake.close()
+
+    def test_fw_version_short_reply(self):
+        self.assertEqual(self.node.get_fw_version(timeout=2.0), (7, 0))
+
+    def test_long_reply_reassembled(self):
+        reply = self.node.comm_request(b'\x42', timeout=2.0)
+        self.assertEqual(reply, bytes([0x42]) + bytes(range(19)))
+
+    def test_timeout_returns_none(self):
+        self.assertIsNone(self.node.comm_request(b'\x63', timeout=0.2))
+
+
 if __name__ == '__main__':
     unittest.main()
