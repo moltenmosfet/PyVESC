@@ -1,9 +1,11 @@
 # PyVESC — Molten MOSFET fork
 
-Python driver for [VESC](https://vesc-project.com/) motor controllers over serial or
-TCP. This is the control layer for the Molten MOSFET dyno: four-quadrant
-torque/speed commands, telemetry, and a network transport that keeps the laptop
-galvanically isolated from the rig.
+Python driver for [VESC](https://vesc-project.com/) motor controllers, two ways in:
+
+- **Native CAN** (`pyvesc.can`) — the dyno runtime link: single-frame commands,
+  push-based STATUS telemetry, per-run config envelopes, over SocketCAN.
+- **COMM protocol** (serial or TCP) — the bench-setup path: full config,
+  firmware flashing, terminal, and the four-quadrant command set.
 
 Forked from [LiamBindle/PyVESC](https://github.com/LiamBindle/PyVESC) with
 [PR #38](https://github.com/LiamBindle/PyVESC/pull/38) (lukedempsey: interface
@@ -13,6 +15,26 @@ upstream — the original README and the
 upstream, not this fork.
 
 ## What this fork adds
+
+- **Native VESC CAN layer** (`pyvesc.can`, needs `pip install python-can`) —
+  frame-exact encoders for the command + `CONF_*` packets, STATUS_1–6 decode
+  into a live thread-safe telemetry snapshot per controller id, PING/PONG bus
+  enumeration, and candump logging of both directions (the immutable
+  stimulus+response record of a run). Wire formats verified against bldc
+  fw 7.00 source, with a live enum-drift guard against `../bldc/datatypes.h`.
+  Two fw quirks handled that the docs don't mention: the off-delay field is
+  *prepended* on `SET_CURRENT` but *appended* on `SET_CURRENT_REL`, and
+  `CONF_FOC_ERPMS` is a sensorless threshold, **not** a speed limit.
+
+  ```python
+  from pyvesc.can import VescCanBus, VescCanNode
+
+  with VescCanBus(channel="can0") as bus:      # SocketCAN
+      absorber = VescCanNode(bus, 10)
+      absorber.conf_current_limits_in(-20.0, 80.0)   # absorption ceiling, RAM only
+      absorber.set_current(-15.0, off_delay_s=0.2)   # brake, auto-zero in 200 ms
+      print(absorber.telemetry.status1.rpm, absorber.telemetry.status5.v_in)
+  ```
 
 - **Four-quadrant command set**, hardware-verified: `SetCurrent`,
   `SetCurrentBrake`, `SetHandbrake` (added), `SetRPM`, `SetDutyCycle`, all in
@@ -105,8 +127,10 @@ tracking, regen. Every hardware test so far sends zero-valued commands only.
 ## Testing
 
 ```sh
-./.venv/bin/python -m unittest test                # protocol + TCP loopback
-./.venv/bin/python -m unittest test_dyno_commands  # 4Q commands + enum-drift guard
+./.venv/bin/python -m unittest test                # COMM protocol + TCP loopback
+./.venv/bin/python -m unittest test_dyno_commands  # 4Q commands + COMM enum guard
+./.venv/bin/python -m unittest test_can_frames     # CAN golden bytes + enum guard
+./.venv/bin/python -m unittest test_can_bus        # CAN bus/node over virtual interface
 ./.venv/bin/python bench_check.py [port] [can_id]  # on real hardware
 ```
 
