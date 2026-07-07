@@ -166,9 +166,12 @@ class VescCanBus:
         with self._comm_lock:
             self._comm_reply = None
             self._comm_event.clear()
-            for frame in frames.encode_comm_frames(controller_id, HOST_ID,
-                                                   payload):
-                self.send(frame)
+            try:
+                for frame in frames.encode_comm_frames(controller_id, HOST_ID,
+                                                       payload):
+                    self.send(frame)
+            except can.CanOperationError:
+                return None  # dead bus (see ping()): no reply is coming
             deadline = time.monotonic() + timeout
             while True:
                 remaining = deadline - time.monotonic()
