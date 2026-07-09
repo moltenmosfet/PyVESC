@@ -1,7 +1,7 @@
 """
 Unit tests for pyvesc.can.frames — golden wire bytes hand-computed from
 bldc fw 7.00 source (comm/comm_can.c), plus an enum drift guard that parses
-the live ../bldc/datatypes.h when present.
+the live ../vesc_firmware/datatypes.h (moltenmosfet fork) when present.
 
 Run: ./.venv/bin/python -m unittest test_can_frames
 """
@@ -16,7 +16,7 @@ from pyvesc.can.frames import (CanPacketId, Pong, Status1, Status2, Status3,
                                Status4, Status5, Status6, decode_frame,
                                make_arbitration_id, split_arbitration_id)
 
-BLDC_DATATYPES = os.path.join(os.path.dirname(__file__), '..', 'bldc', 'datatypes.h')
+BLDC_DATATYPES = os.path.join(os.path.dirname(__file__), '..', 'vesc_firmware', 'datatypes.h')
 
 
 class TestArbitrationId(unittest.TestCase):
@@ -211,6 +211,8 @@ class TestEnumMatchesFirmware(unittest.TestCase):
             'CONF_FOC_ERPMS': 25, 'CONF_STORE_FOC_ERPMS': 26, 'STATUS_5': 27,
             'CONF_BATTERY_CUT': 29, 'CONF_STORE_BATTERY_CUT': 30,
             'SHUTDOWN': 31, 'STATUS_6': 58,
+            # Molten MOSFET fork private block
+            'MM_SET_ID_DISSIPATE': 200, 'MM_STATUS_DISSIPATION': 201,
         }
         for name, value in expected.items():
             self.assertEqual(getattr(CanPacketId, name), value, name)
@@ -229,8 +231,49 @@ class TestEnumMatchesFirmware(unittest.TestCase):
             self.assertEqual(member.value, fw[member.name], member.name)
 
 
-if __name__ == '__main__':
-    unittest.main()
+class TestSetIdDissipate(unittest.TestCase):
+    """Molten MOSFET fork command. Golden bytes hand-derived from the fork's
+    comm_can.c decode: [current f32x1e3][off_delay f16x1e3], both mandatory."""
+
+    def test_golden_bytes(self):
+        arb, data = frames.encode_set_id_dissipate(100, 5.0, 0.5)
+        self.assertEqual(arb, (200 << 8) | 100)
+        self.assertEqual(data, struct.pack('!i', 5000) + struct.pack('!h', 500))
+
+    def test_off_delay_is_appended_and_mandatory(self):
+        _, data = frames.encode_set_id_dissipate(1, 12.5, 5.0)
+        self.assertEqual(len(data), 6)                       # never a 4-byte frame
+        self.assertEqual(data[0:4], struct.pack('!i', 12500))
+        self.assertEqual(data[4:6], struct.pack('!h', 5000))
+
+    def test_rejects_negative_current(self):
+        with self.assertRaises(ValueError):
+            frames.encode_set_id_dissipate(1, -1.0, 0.5)
+
+    def test_rejects_off_delay_outside_firmware_cap(self):
+        with self.assertRaises(ValueError):
+            frames.encode_set_id_dissipate(1, 1.0, 0.0)
+        with self.assertRaises(ValueError):
+            frames.encode_set_id_dissipate(1, 1.0, 5.1)
+
+
+class TestStatusDissipationDecode(unittest.TestCase):
+    def test_golden_decode(self):
+        # id=-4.2A, iq=10.0A, diss_now=4.2A, p_copper=137W
+        data = (struct.pack('!h', -42) + struct.pack('!h', 100) +
+                struct.pack('!h', 42) + struct.pack('!H', 137))
+        got = decode_frame((201 << 8) | 100, data)
+        self.assertIsNotNone(got)
+        controller_id, st = got
+        self.assertEqual(controller_id, 100)
+        self.assertIsInstance(st, frames.StatusDissipation)
+        self.assertAlmostEqual(st.id_meas, -4.2)
+        self.assertAlmostEqual(st.iq_meas, 10.0)
+        self.assertAlmostEqual(st.id_diss_now, 4.2)
+        self.assertEqual(st.p_copper, 137.0)
+
+    def test_short_frame_returns_none(self):
+        self.assertIsNone(decode_frame((201 << 8) | 100, b'\x00' * 6))
 
 
 class TestCommTunnelEncode(unittest.TestCase):
@@ -275,3 +318,7 @@ class TestCommTunnelEncode(unittest.TestCase):
                 o = struct.unpack('!H', data[:2])[0]
                 buf[o:o + len(data) - 2] = data[2:]
         self.assertEqual(bytes(buf[:300]), payload)
+
+
+if __name__ == '__main__':
+    unittest.main()

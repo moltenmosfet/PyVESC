@@ -70,6 +70,10 @@ class CanPacketId(IntEnum):
     CONF_STORE_BATTERY_CUT = 30
     SHUTDOWN = 31
     STATUS_6 = 58
+    # Molten MOSFET private block (200-209) — moltenmosfet/vesc_firmware fork
+    # only; chosen far above upstream's allocation frontier.
+    MM_SET_ID_DISSIPATE = 200
+    MM_STATUS_DISSIPATION = 201
 
 
 class VescFrame(NamedTuple):
@@ -192,6 +196,28 @@ def encode_set_handbrake_rel(controller_id: int, rel: float) -> VescFrame:
     _check_rel(rel, "rel")
     return VescFrame(make_arbitration_id(CanPacketId.SET_CURRENT_HANDBRAKE_REL, controller_id),
                      _scaled32(rel, 1e5, "rel"))
+
+
+def encode_set_id_dissipate(controller_id: int, current_a: float,
+                            off_delay_s: float) -> VescFrame:
+    """Molten MOSFET fork only: inject d-axis current to burn energy as winding
+    heat (~zero torque; torque keeps priority over the injection in firmware).
+
+    off_delay_s is MANDATORY — it is the command's watchdog. The firmware
+    clamps it to [0.05, 5.0] s and ramps the injection to zero on expiry, so
+    the host must refresh continuously to sustain a dump. Frames without the
+    off-delay field are ignored by the firmware.
+
+    Payload: [current f32×1e3][off_delay f16×1e3] (appended, like
+    SET_CURRENT_REL — not the SET_CURRENT prepend quirk).
+    """
+    if current_a < 0.0:
+        raise ValueError("dissipation current is a magnitude, got %r" % current_a)
+    if not 0.0 < off_delay_s <= 5.0:
+        raise ValueError("off_delay_s must be in (0, 5.0] s (firmware cap), got %r"
+                         % off_delay_s)
+    data = _scaled32(current_a, 1e3, "current_a") + _off_delay_bytes(off_delay_s)
+    return VescFrame(make_arbitration_id(CanPacketId.MM_SET_ID_DISSIPATE, controller_id), data)
 
 
 # --- CONF_* envelope encoders (RAM by default; store=True persists to flash) --
@@ -335,6 +361,15 @@ class Status6(NamedTuple):
     ppm: float
 
 
+class StatusDissipation(NamedTuple):
+    """MM_STATUS_DISSIPATION (fork id 201): d-axis dump telemetry. Broadcast
+    alongside STATUS_1 but only while the injection is armed."""
+    id_meas: float      # measured d-axis current, A (filtered; negative = injecting)
+    iq_meas: float      # measured q-axis current, A (filtered)
+    id_diss_now: float  # ramped injection magnitude the firmware is applying, A
+    p_copper: float     # firmware copper-loss estimate 1.5·Rs·(id²+iq²), W
+
+
 class Pong(NamedTuple):
     """PONG payload. Note: the frame's controller-id field is the ADDRESSEE
     (the pinger's sender_id); the responder is in the payload."""
@@ -342,7 +377,8 @@ class Pong(NamedTuple):
     hw_type: int        # HW_TYPE_* (0 = VESC)
 
 
-DecodedStatus = Union[Status1, Status2, Status3, Status4, Status5, Status6, Pong]
+DecodedStatus = Union[Status1, Status2, Status3, Status4, Status5, Status6,
+                      StatusDissipation, Pong]
 
 
 def _i16(data: bytes, off: int) -> int:
@@ -390,6 +426,12 @@ def decode_frame(arbitration_id: int,
                                       adc2=_i16(data, 2) / 1e3,
                                       adc3=_i16(data, 4) / 1e3,
                                       ppm=_i16(data, 6) / 1e3)
+    if pid == CanPacketId.MM_STATUS_DISSIPATION and len(data) >= 8:
+        return controller_id, StatusDissipation(
+            id_meas=_i16(data, 0) / 10.0,
+            iq_meas=_i16(data, 2) / 10.0,
+            id_diss_now=_i16(data, 4) / 10.0,
+            p_copper=float(struct.unpack_from('!H', data, 6)[0]))
     if pid == CanPacketId.PONG and len(data) >= 1:
         hw_type = data[1] if len(data) >= 2 else 0
         return controller_id, Pong(controller_id=data[0], hw_type=hw_type)

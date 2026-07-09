@@ -51,6 +51,15 @@ class VescCanNode:
     def set_handbrake(self, amps: float) -> None:
         self.bus.send(frames.encode_set_handbrake(self.controller_id, amps))
 
+    def set_id_dissipate(self, amps: float, off_delay_s: float = 0.5) -> None:
+        """Molten MOSFET fork only: d-axis dissipation injection (winding-heat
+        energy dump; ~zero torque, and torque keeps priority in firmware).
+        Refresh faster than off_delay_s to sustain a dump — the firmware ramps
+        the injection out when the window (clamped to [0.05, 5.0] s) expires.
+        Stock firmware silently ignores this frame."""
+        self.bus.send(frames.encode_set_id_dissipate(
+            self.controller_id, amps, off_delay_s))
+
     def stop(self) -> None:
         """Zero the torque command. Convenience, not a safety stop."""
         self.set_current(0.0)

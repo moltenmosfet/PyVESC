@@ -92,3 +92,6 @@ class VedderCmd(IntEnum):
     COMM_SET_BLE_NAME = 87
     COMM_SET_BLE_PIN = 88
     COMM_SET_CAN_MODE = 89
+
+    # Molten MOSFET private block (240+) — moltenmosfet/vesc_firmware fork only.
+    COMM_MM_SET_ID_DISSIPATE = 240

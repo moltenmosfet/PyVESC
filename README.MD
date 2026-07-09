@@ -21,10 +21,20 @@ protocol integers (milliamps), this fork's take engineering units (amps).
   into a live thread-safe telemetry snapshot per controller id, PING/PONG bus
   enumeration, and candump logging of both directions (the immutable
   stimulus+response record of a run). Wire formats verified against bldc
-  fw 7.00 source, with a live enum-drift guard against `../bldc/datatypes.h`.
+  fw 7.00 source, with a live enum-drift guard against
+  `../vesc_firmware/datatypes.h`.
   Two fw quirks handled that the docs don't mention: the off-delay field is
   *prepended* on `SET_CURRENT` but *appended* on `SET_CURRENT_REL`, and
   `CONF_FOC_ERPMS` is a sensorless threshold, **not** a speed limit.
+
+- **d-axis dissipation commands** (branch `feature/d-axis-dissipation`) for
+  the matching [moltenmosfet/vesc_firmware](https://github.com/moltenmosfet/vesc_firmware)
+  fork: `node.set_id_dissipate(amps, off_delay_s)` / COMM `SetIdDissipate`
+  burn braking energy as winding heat in the dyno absorber motor
+  (watchdogged; torque keeps priority in firmware), with `StatusDissipation`
+  telemetry (measured id/iq, applied injection, copper-loss watts). Stock
+  firmware silently ignores these frames. Bench ladder: `can_diss_check.py`;
+  design doc: `documentation/mm_d_axis_dissipation.md` in the firmware fork.
 
   ```python
   from pyvesc.can import VescCanBus, VescCanNode

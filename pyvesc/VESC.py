@@ -6,7 +6,8 @@ from .messages.getters import GetVersion, GetMotorConfig, GetAppConfig, GetValue
 from .messages.setters import (
     SetMotorConfig, SetAppConfig, SetRPM, SetCurrent, SetDutyCycle,
     SetServoPosition, EraseNewApp, WriteNewAppData, WriteNewAppDataLZO,
-    JumpToBootloader, TerminalCmd, SetRotorPositionMode, Reboot, Alive
+    JumpToBootloader, TerminalCmd, SetRotorPositionMode, Reboot, Alive,
+    SetIdDissipate
 )
 import time
 import threading
@@ -304,6 +305,18 @@ class VESC(object):
         """
         kwargs.setdefault('can_id', self.can_id)
         self.write(encode(SetCurrent(new_current, **kwargs)))
+
+    def set_id_dissipate(self, current, off_delay=0.5, **kwargs):
+        """Molten MOSFET fork only: d-axis dissipation injection (winding-heat
+        energy dump; ~zero torque, torque keeps priority in firmware).
+
+        :param current: dissipation current magnitude in amps
+        :param off_delay: command validity window in seconds (firmware clamps
+            to [0.05, 5.0]); refresh faster than this to sustain a dump
+        :param kwargs: optional can_id to forward the command over CAN
+        """
+        kwargs.setdefault('can_id', self.can_id)
+        self.write(encode(SetIdDissipate(current, off_delay, **kwargs)))
 
     def set_duty_cycle(self, new_duty_cycle, **kwargs):
         """

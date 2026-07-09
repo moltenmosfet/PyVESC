@@ -83,6 +83,22 @@ class SetHandbrake(metaclass=VESCMessage):
     ]
 
 
+class SetIdDissipate(metaclass=VESCMessage):
+    """Molten MOSFET fork only: d-axis dissipation injection (winding-heat
+    energy dump; ~zero torque, torque keeps priority in firmware).
+
+    :ivar current: Dissipation current magnitude in amps.
+    :ivar off_delay: Command validity window in seconds — the watchdog. The
+        firmware clamps it to [0.05, 5.0] s and ramps the injection out on
+        expiry; refresh faster than this to sustain a dump.
+    """
+    id = VedderCmd.COMM_MM_SET_ID_DISSIPATE
+    send_fields = [
+        ('current', 'i', 1000),
+        ('off_delay', 'h', 1000)
+    ]
+
+
 class SetPosition(metaclass=VESCMessage):
     """Set the rotor angle based off of an encoder or sensor
 
