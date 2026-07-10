@@ -7,7 +7,7 @@ from .messages.setters import (
     SetMotorConfig, SetAppConfig, SetRPM, SetCurrent, SetDutyCycle,
     SetServoPosition, EraseNewApp, WriteNewAppData, WriteNewAppDataLZO,
     JumpToBootloader, TerminalCmd, SetRotorPositionMode, Reboot, Alive,
-    SetIdDissipate
+    SetIdDissipate, SetBusClamp
 )
 import time
 import threading
@@ -317,6 +317,26 @@ class VESC(object):
         """
         kwargs.setdefault('can_id', self.can_id)
         self.write(encode(SetIdDissipate(current, off_delay, **kwargs)))
+
+    def conf_bus_clamp(self, v_clamp, i_floor=0.0, i_max=0.0, clamp_en=True,
+                       floor_en=True, allow_start_modulation=False, **kwargs):
+        """Molten MOSFET fork only: arm the d-axis bus clamp (dissipative
+        braking without a battery). NOT watchdogged — survives faults and
+        comms loss until disarm_bus_clamp() or reboot; re-arm each power-up.
+
+        :param v_clamp: bus voltage ceiling in volts
+        :param i_floor: DC input current floor in amps (0 = never backfeed)
+        :param i_max: injected |id| ceiling in amps (0 = motor limit)
+        :param kwargs: optional can_id to forward the command over CAN
+        """
+        flags = ((1 if clamp_en else 0) | (2 if floor_en else 0)
+                 | (4 if allow_start_modulation else 0))
+        kwargs.setdefault('can_id', self.can_id)
+        self.write(encode(SetBusClamp(v_clamp, i_floor, i_max, flags, **kwargs)))
+
+    def disarm_bus_clamp(self, **kwargs):
+        kwargs.setdefault('can_id', self.can_id)
+        self.write(encode(SetBusClamp(0.0, 0.0, 0.0, 0, **kwargs)))
 
     def set_duty_cycle(self, new_duty_cycle, **kwargs):
         """

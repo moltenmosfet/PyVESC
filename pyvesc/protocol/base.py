@@ -76,6 +76,17 @@ class VESCMessage(type):
             if 'p' in cls._send_field_formats:
                 raise TypeError("Field with format character 'p' detected. For string field use 's'.")
 
+            # Scalars are applied by zipping names with scalars, so a message
+            # that scales SOME fields but not others silently drops/misaligns
+            # values at pack time. Fail loudly at class definition instead:
+            # either scale no fields, or give every field a scalar (use 1).
+            if cls._send_field_scalars and \
+                    len(cls._send_field_scalars) != len(cls._send_field_names):
+                raise TypeError("%s: %d send_fields but %d scalars — give every "
+                                "field a scalar (use 1) or none at all." % (
+                                cls.__name__, len(cls._send_field_names),
+                                len(cls._send_field_scalars)))
+
         # format the fields to receive, if we didn't define any - don't make any
         # TODO: this is duplicated code, should be refactored
         if hasattr(cls, 'recv_fields'):

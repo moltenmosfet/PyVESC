@@ -99,6 +99,24 @@ class SetIdDissipate(metaclass=VESCMessage):
     ]
 
 
+class SetBusClamp(metaclass=VESCMessage):
+    """Molten MOSFET fork only: arm/disarm the d-axis bus clamp (dissipative
+    braking without a battery). NOT watchdogged; flags == 0 disarms.
+
+    :ivar v_clamp: Bus voltage ceiling in volts.
+    :ivar i_floor: DC input current floor in amps (0 = never backfeed).
+    :ivar i_max: Injected |id| ceiling in amps (0 = motor limit).
+    :ivar flags: bit0 clamp_en, bit1 floor_en, bit2 allow_start_modulation.
+    """
+    id = VedderCmd.COMM_MM_CONF_BUS_CLAMP
+    send_fields = [
+        ('v_clamp', 'h', 10),
+        ('i_floor', 'h', 100),
+        ('i_max', 'h', 10),
+        ('flags', 'B', 1)  # scalar mandatory: mixed scaled/unscaled fields are rejected
+    ]
+
+
 class SetPosition(metaclass=VESCMessage):
     """Set the rotor angle based off of an encoder or sensor
 

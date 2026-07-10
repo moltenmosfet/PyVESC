@@ -213,6 +213,7 @@ class TestEnumMatchesFirmware(unittest.TestCase):
             'SHUTDOWN': 31, 'STATUS_6': 58,
             # Molten MOSFET fork private block
             'MM_SET_ID_DISSIPATE': 200, 'MM_STATUS_DISSIPATION': 201,
+            'MM_CONF_BUS_CLAMP': 202, 'MM_STATUS_BUS_CLAMP': 203,
         }
         for name, value in expected.items():
             self.assertEqual(getattr(CanPacketId, name), value, name)
@@ -274,6 +275,56 @@ class TestStatusDissipationDecode(unittest.TestCase):
 
     def test_short_frame_returns_none(self):
         self.assertIsNone(decode_frame((201 << 8) | 100, b'\x00' * 6))
+
+
+class TestConfBusClamp(unittest.TestCase):
+    """Molten MOSFET fork command. Golden bytes hand-derived from the fork's
+    comm_can.c decode: [v_clamp f16x10][i_floor f16x100][i_max f16x10][flags u8]."""
+
+    def test_golden_bytes(self):
+        arb, data = frames.encode_conf_bus_clamp(100, 48.0, i_floor=0.5, i_max=10.0)
+        self.assertEqual(arb, (202 << 8) | 100)
+        self.assertEqual(data, struct.pack('!h', 480) + struct.pack('!h', 50)
+                         + struct.pack('!h', 100) + bytes([0x03]))  # clamp|floor
+
+    def test_flags_bits(self):
+        _, data = frames.encode_conf_bus_clamp(1, 30.0, floor_en=False,
+                                               allow_start_modulation=True)
+        self.assertEqual(data[6], 0x05)  # clamp | allow_start
+
+    def test_disarm_is_all_zero(self):
+        arb, data = frames.encode_bus_clamp_disarm(100)
+        self.assertEqual(arb, (202 << 8) | 100)
+        self.assertEqual(data, b'\x00' * 7)
+
+    def test_rejects_nonpositive_v_clamp_and_all_disabled(self):
+        with self.assertRaises(ValueError):
+            frames.encode_conf_bus_clamp(1, 0.0)
+        with self.assertRaises(ValueError):
+            frames.encode_conf_bus_clamp(1, 48.0, clamp_en=False, floor_en=False)
+
+
+class TestStatusBusClampDecode(unittest.TestCase):
+    def test_golden_decode(self):
+        # v=48.2 V, i_bus=-1.25 A, id_now=7.5 A, armed+clamp_active+saturated
+        data = (struct.pack('!h', 482) + struct.pack('!h', -125) +
+                struct.pack('!h', 75) + bytes([0x01 | 0x02 | 0x08]))
+        got = decode_frame((203 << 8) | 100, data)
+        self.assertIsNotNone(got)
+        controller_id, st = got
+        self.assertEqual(controller_id, 100)
+        self.assertIsInstance(st, frames.StatusBusClamp)
+        self.assertAlmostEqual(st.v_bus, 48.2)
+        self.assertAlmostEqual(st.i_bus, -1.25)
+        self.assertAlmostEqual(st.id_clamp_now, 7.5)
+        self.assertTrue(st.armed)
+        self.assertTrue(st.clamp_active)
+        self.assertFalse(st.floor_active)
+        self.assertTrue(st.saturated)
+        self.assertFalse(st.started_modulation)
+
+    def test_short_frame_returns_none(self):
+        self.assertIsNone(decode_frame((203 << 8) | 100, b'\x00' * 6))
 
 
 class TestCommTunnelEncode(unittest.TestCase):

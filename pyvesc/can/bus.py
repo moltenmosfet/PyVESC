@@ -25,7 +25,8 @@ import can
 
 from . import frames
 from .frames import (CanPacketId, Pong, Status1, Status2, Status3, Status4,
-                     Status5, Status6, StatusDissipation, VescFrame)
+                     Status5, Status6, StatusBusClamp, StatusDissipation,
+                     VescFrame)
 
 # Identity used in PING payloads so PONGs route back to us. Any id no VESC on
 # the bus uses; 254 is conventional for a non-VESC host.
@@ -50,6 +51,8 @@ class NodeTelemetry:
     #: Molten MOSFET fork: d-axis dump telemetry (absent on stock firmware and
     #: while the injection is idle — the fork only broadcasts it when armed).
     status_dissipation: Optional[StatusDissipation] = None
+    #: Molten MOSFET fork: bus-clamp telemetry (broadcast while armed).
+    status_bus_clamp: Optional[StatusBusClamp] = None
     stamps: Dict[str, float] = field(default_factory=dict)
 
     def age(self, name: str = 'status1',
@@ -284,4 +287,5 @@ _STATUS_SLOTS = {
     Status5: 'status5',
     Status6: 'status6',
     StatusDissipation: 'status_dissipation',
+    StatusBusClamp: 'status_bus_clamp',
 }

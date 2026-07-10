@@ -35,6 +35,13 @@ protocol integers (milliamps), this fork's take engineering units (amps).
   telemetry (measured id/iq, applied injection, copper-loss watts). Stock
   firmware silently ignores these frames. Bench ladder: `can_diss_check.py`;
   design doc: `documentation/mm_d_axis_dissipation.md` in the firmware fork.
+- **d-axis bus clamp** (same branch/fork): `node.conf_bus_clamp(v_clamp,
+  i_floor, i_max, ...)` / `disarm_bus_clamp()` / COMM `SetBusClamp` arm a
+  firmware-local controller that burns regen in the windings so the DC input
+  current never goes below `i_floor` (braking without a battery) and the bus
+  never exceeds `v_clamp`. NOT watchdogged — survives faults/comms loss until
+  disarmed; re-arm each power-up. `StatusBusClamp` telemetry broadcasts while
+  armed. Guided bench ladder: `can_clamp_check.py`.
 
   ```python
   from pyvesc.can import VescCanBus, VescCanNode

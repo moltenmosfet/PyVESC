@@ -60,6 +60,25 @@ class VescCanNode:
         self.bus.send(frames.encode_set_id_dissipate(
             self.controller_id, amps, off_delay_s))
 
+    def conf_bus_clamp(self, v_clamp: float, i_floor: float = 0.0,
+                       i_max: float = 0.0, clamp_en: bool = True,
+                       floor_en: bool = True,
+                       allow_start_modulation: bool = False) -> None:
+        """Molten MOSFET fork only: arm the d-axis bus clamp (dissipative
+        braking without a battery). NOT watchdogged — survives faults and
+        comms loss until disarm_bus_clamp() or reboot; re-arm each power-up.
+        Telemetry arrives as ``telemetry.status_bus_clamp`` while armed."""
+        self.bus.send(frames.encode_conf_bus_clamp(
+            self.controller_id, v_clamp, i_floor, i_max,
+            clamp_en, floor_en, allow_start_modulation))
+        self._record_conf('bus_clamp',
+                          (v_clamp, i_floor, i_max,
+                           clamp_en, floor_en, allow_start_modulation), False)
+
+    def disarm_bus_clamp(self) -> None:
+        self.bus.send(frames.encode_bus_clamp_disarm(self.controller_id))
+        self._record_conf('bus_clamp', ('disarmed',), False)
+
     def stop(self) -> None:
         """Zero the torque command. Convenience, not a safety stop."""
         self.set_current(0.0)

@@ -95,3 +95,4 @@ class VedderCmd(IntEnum):
 
     # Molten MOSFET private block (240+) — moltenmosfet/vesc_firmware fork only.
     COMM_MM_SET_ID_DISSIPATE = 240
+    COMM_MM_CONF_BUS_CLAMP = 241

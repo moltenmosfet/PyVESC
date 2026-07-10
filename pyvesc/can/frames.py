@@ -74,6 +74,8 @@ class CanPacketId(IntEnum):
     # only; chosen far above upstream's allocation frontier.
     MM_SET_ID_DISSIPATE = 200
     MM_STATUS_DISSIPATION = 201
+    MM_CONF_BUS_CLAMP = 202
+    MM_STATUS_BUS_CLAMP = 203
 
 
 class VescFrame(NamedTuple):
@@ -196,6 +198,47 @@ def encode_set_handbrake_rel(controller_id: int, rel: float) -> VescFrame:
     _check_rel(rel, "rel")
     return VescFrame(make_arbitration_id(CanPacketId.SET_CURRENT_HANDBRAKE_REL, controller_id),
                      _scaled32(rel, 1e5, "rel"))
+
+
+def encode_conf_bus_clamp(controller_id: int, v_clamp: float,
+                          i_floor: float = 0.0, i_max: float = 0.0,
+                          clamp_en: bool = True, floor_en: bool = True,
+                          allow_start_modulation: bool = False) -> VescFrame:
+    """Molten MOSFET fork only: arm the d-axis bus clamp — dissipative braking
+    without a battery. The firmware burns regen in the windings so the DC
+    input current stays >= i_floor (floor) and v_bus stays <= v_clamp
+    (reactive backstop), torque keeping priority throughout.
+
+    RAM-only and NOT watchdogged: survives faults/releases/comms loss, cleared
+    only by encode_bus_clamp_disarm() or reboot — re-arm each power-up.
+
+    i_max caps the injected |id| (0 = motor current limit).
+    allow_start_modulation lets an armed clamp (re)start modulation when an
+    externally-spun motor pumps the bus through the body diodes; firmware
+    gates it on enough speed for the observer to be trustworthy. Default off.
+
+    Payload: [v_clamp f16×10][i_floor f16×100][i_max f16×10][flags u8].
+    Stock firmware silently ignores this frame.
+    """
+    if v_clamp <= 0.0:
+        raise ValueError("v_clamp must be positive volts, got %r" % v_clamp)
+    if i_max < 0.0:
+        raise ValueError("i_max is a magnitude (0 = motor limit), got %r" % i_max)
+    flags = ((1 if clamp_en else 0) | (2 if floor_en else 0)
+             | (4 if allow_start_modulation else 0))
+    if flags == 0:
+        raise ValueError("all features disabled — use encode_bus_clamp_disarm()")
+    data = (_scaled16(v_clamp, 1e1, "v_clamp")
+            + _scaled16(i_floor, 1e2, "i_floor")
+            + _scaled16(i_max, 1e1, "i_max")
+            + bytes([flags]))
+    return VescFrame(make_arbitration_id(CanPacketId.MM_CONF_BUS_CLAMP, controller_id), data)
+
+
+def encode_bus_clamp_disarm(controller_id: int) -> VescFrame:
+    """Disarm the bus clamp (flags = 0; the injection ramps out in firmware)."""
+    return VescFrame(make_arbitration_id(CanPacketId.MM_CONF_BUS_CLAMP, controller_id),
+                     b'\x00' * 7)
 
 
 def encode_set_id_dissipate(controller_id: int, current_a: float,
@@ -370,6 +413,20 @@ class StatusDissipation(NamedTuple):
     p_copper: float     # firmware copper-loss estimate 1.5·Rs·(id²+iq²), W
 
 
+class StatusBusClamp(NamedTuple):
+    """MM_STATUS_BUS_CLAMP (fork id 203): bus-clamp telemetry, broadcast
+    alongside STATUS_1 while ARMED (visibility of armed protection is the
+    point — stops broadcasting on disarm)."""
+    v_bus: float        # bus voltage, V (filtered)
+    i_bus: float        # DC input current, A — the FILTERED value the floor loop regulates
+    id_clamp_now: float # injection magnitude the clamp is applying, A
+    armed: bool
+    clamp_active: bool  # voltage-clamp PI owns the demand
+    floor_active: bool  # current-floor PI owns the demand
+    saturated: bool     # iq-priority budget is clipping the demand (torque about to fold back)
+    started_modulation: bool  # clamp auto-started modulation (coast case)
+
+
 class Pong(NamedTuple):
     """PONG payload. Note: the frame's controller-id field is the ADDRESSEE
     (the pinger's sender_id); the responder is in the payload."""
@@ -378,7 +435,7 @@ class Pong(NamedTuple):
 
 
 DecodedStatus = Union[Status1, Status2, Status3, Status4, Status5, Status6,
-                      StatusDissipation, Pong]
+                      StatusDissipation, StatusBusClamp, Pong]
 
 
 def _i16(data: bytes, off: int) -> int:
@@ -432,6 +489,17 @@ def decode_frame(arbitration_id: int,
             iq_meas=_i16(data, 2) / 10.0,
             id_diss_now=_i16(data, 4) / 10.0,
             p_copper=float(struct.unpack_from('!H', data, 6)[0]))
+    if pid == CanPacketId.MM_STATUS_BUS_CLAMP and len(data) >= 7:
+        flags = data[6]
+        return controller_id, StatusBusClamp(
+            v_bus=_i16(data, 0) / 10.0,
+            i_bus=_i16(data, 2) / 100.0,
+            id_clamp_now=_i16(data, 4) / 10.0,
+            armed=bool(flags & 0x01),
+            clamp_active=bool(flags & 0x02),
+            floor_active=bool(flags & 0x04),
+            saturated=bool(flags & 0x08),
+            started_modulation=bool(flags & 0x10))
     if pid == CanPacketId.PONG and len(data) >= 1:
         hw_type = data[1] if len(data) >= 2 else 0
         return controller_id, Pong(controller_id=data[0], hw_type=hw_type)
