@@ -166,9 +166,9 @@ def main():
 
         v_clamp_4 = psu_v + 1.0
         confirm('Step 4b (CLAMP): same stimulus, clamp %.1f V (PSU + 1), '
-                'i_max 20 A. Expect engagement and a lower peak than the '
+                'i_max 40 A. Expect engagement and a lower peak than the '
                 'baseline. Hands clear.' % v_clamp_4)
-        node.conf_bus_clamp(v_clamp_4, i_floor=0.0, i_max=20.0,
+        node.conf_bus_clamp(v_clamp_4, i_floor=0.0, i_max=40.0,
                             clamp_en=True, floor_en=False)
         max_v, _min_i, peak_erpm, log = spin_brake(node, 3.0, 5.0, 2.0, samples=50)
         engaged = any(s.clamp_active for s in log)
@@ -189,10 +189,10 @@ def main():
 
         # -- 5: floor-PI alone — i_bus never goes negative --------------------
         confirm('Step 5 (FLOOR): gentler brake (2 A), floor mode (i_floor = '
-                '0), clamp %.1f V as backstop, i_max 20 A. Regen must be '
+                '0), clamp %.1f V as backstop, i_max 40 A. Regen must be '
                 'burned as produced — i_bus should not go meaningfully '
                 'negative.' % v_clamp)
-        node.conf_bus_clamp(v_clamp, i_floor=0.0, i_max=20.0,
+        node.conf_bus_clamp(v_clamp, i_floor=0.0, i_max=40.0,
                             clamp_en=True, floor_en=True)
         max_v, min_i, peak_erpm, log = spin_brake(node, 3.0, 2.0, 2.0, samples=50)
         floor_seen = any(s.floor_active for s in log)
