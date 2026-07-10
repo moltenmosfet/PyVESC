@@ -164,18 +164,28 @@ class VescCanBus:
                 self._comm_event.set()
 
     def comm_request(self, controller_id: int, payload: bytes,
-                     timeout: float = 0.5) -> Optional[bytes]:
+                     timeout: float = 0.5,
+                     frame_gap_s: float = 0.002) -> Optional[bytes]:
         """Send one COMM packet (un-framed payload, e.g. b'\\x00' =
         COMM_FW_VERSION) over the CAN tunnel; returns the reply payload or
         None on timeout. Serialized bus-wide: the tunnel has no request ids,
-        so exactly one request may be in flight."""
+        so exactly one request may be in flight.
+
+        frame_gap_s: inter-frame pacing for chunked (>6 byte) payloads. The
+        firmware reassembles by strict offset continuity, so ONE dropped
+        frame kills the whole transfer silently — and slcan-style adapters
+        drop frames under unpaced bursts. 2 ms default; 0 disables."""
         with self._comm_lock:
             self._comm_reply = None
             self._comm_event.clear()
             try:
-                for frame in frames.encode_comm_frames(controller_id, HOST_ID,
-                                                       payload):
+                frame_list = frames.encode_comm_frames(controller_id, HOST_ID,
+                                                       payload)
+                for i, frame in enumerate(frame_list):
                     self.send(frame)
+                    if frame_gap_s > 0.0 and len(frame_list) > 1 \
+                            and i < len(frame_list) - 1:
+                        time.sleep(frame_gap_s)
             except can.CanOperationError:
                 return None  # dead bus (see ping()): no reply is coming
             deadline = time.monotonic() + timeout

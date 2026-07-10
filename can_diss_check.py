@@ -93,24 +93,31 @@ def main():
                              'id=%.1f iq=%.1f p=%.0fW rpm=%s' %
                              (st.id_meas, st.iq_meas, st.p_copper, rpm)))
 
-        # 3: torque priority under a tight envelope
+        # 3: torque priority under a tight envelope. The demand (id_diss_now)
+        # stays at the commanded value BY DESIGN — the clip shows in the
+        # MEASURED split: iq owns the budget, id collapses. Handbrake gives a
+        # sustained standstill iq (SET_CURRENT on a free motor just
+        # accelerates and frees the budget again).
         node.conf_current_limits(-amps, amps)
         try:
             t_end = time.monotonic() + 2.0
             last = None
             while time.monotonic() < t_end:
-                node.set_current(amps, off_delay_s=0.3)
+                node.set_handbrake(amps)
                 node.set_id_dissipate(amps, off_delay_s=0.5)
                 time.sleep(0.05)
                 if node.telemetry.status_dissipation is not None:
                     last = node.telemetry.status_dissipation
-            ok = last is not None and last.id_diss_now < 0.5 * amps
-            results.append(check('torque priority (id yields to iq)', ok,
-                                 'id_diss_now=%.1f A under %.1f A envelope' %
-                                 (last.id_diss_now if last else -1, amps)))
+            ok = (last is not None and abs(last.iq_meas) > 0.7 * amps
+                  and abs(last.id_meas) < 0.3 * amps
+                  and last.id_diss_now > 0.9 * amps)
+            results.append(check('torque priority (measured id yields to iq)', ok,
+                                 'id_meas=%.1f iq_meas=%.1f (demand %.1f) under %.1f A envelope' %
+                                 ((last.id_meas, last.iq_meas, last.id_diss_now, amps)
+                                  if last else (-1, -1, -1, amps))))
         finally:
             node.set_current(0.0)
-            node.conf_current_limits(-50.0, 50.0)  # bench envelope back open
+            node.conf_current_limits(-50.0, 50.0)  # bench envelope back open (RAM; reboot restores flash)
 
         # 4: refresh-or-decay — stop refreshing, watch it die
         pump(node, amps, 1.0, off_delay=0.3)

@@ -54,11 +54,17 @@ def wait_status(node, seconds):
     return last
 
 
-def spin_brake(node, erpm, brake_a, brake_s, samples):
-    """Spin up, then brake with constant current, sampling clamp telemetry
-    and STATUS_5 v_in through the stop. Returns (max_vbus, min_ibus, log)."""
-    node.set_rpm(erpm)
-    time.sleep(2.0)
+def spin_brake(node, drive_a, brake_a, brake_s, samples):
+    """Drive with constant current to natural top speed (max kinetic energy
+    for this bus voltage, no speed-PID current spikes into a current-limited
+    PSU), then brake, sampling clamp telemetry through the stop.
+    Returns (max_vbus, min_ibus, peak_erpm, log)."""
+    t_end = time.monotonic() + 2.5
+    while time.monotonic() < t_end:
+        node.set_current(abs(drive_a), off_delay_s=0.3)
+        time.sleep(0.05)
+    s1 = node.telemetry.status1
+    peak_erpm = s1.rpm if s1 else 0.0
     max_v, min_i = 0.0, 0.0
     log = []
     t_end = time.monotonic() + brake_s
@@ -74,7 +80,7 @@ def spin_brake(node, erpm, brake_a, brake_s, samples):
             max_v = max(max_v, s5.v_in)
         time.sleep(1.0 / samples)
     node.set_current(0.0)
-    return max_v, min_i, log
+    return max_v, min_i, peak_erpm, log
 
 
 def main():
@@ -135,43 +141,77 @@ def main():
             if st is not None:
                 last_i = st.i_bus
         node.set_id_dissipate(0.0, off_delay_s=0.1)
-        # i_bus should be positive (drawing) while burning at standstill.
-        ok = last_i is not None and last_i > 0.0
-        results.append(check('standstill burn draws positive i_bus', ok,
+        # At 2 A the burn is ~0.5 W -> ~0.02 A of i_bus, at the telemetry
+        # resolution limit. The assertion is "no backfeed"; the magnitude is
+        # informational (the dissipation ladder proves id tracking properly).
+        ok = last_i is not None and last_i >= -0.05
+        results.append(check('standstill burn does not backfeed', ok,
                              'i_bus %.2f A — compare to 1.5*Rs*id^2/V by hand'
                              % (last_i if last_i is not None else -99)))
 
-        # -- 4: clamp-PI alone under a braking pulse --------------------------
-        confirm('Step 4 (CLAMP): spins to 3000 erpm, then brakes 3 A for 2 s. '
-                'Kinetic energy pumps the bus; the clamp must hold v_bus near '
-                '%.1f V with no oscillation. Hands clear.' % v_clamp)
-        node.conf_bus_clamp(v_clamp, i_floor=0.0, i_max=10.0,
+        # -- 3b/4: clamp vs unclamped baseline --------------------------------
+        # A bench motor's burnable power is small (1.5*Rs*i_max^2 — tens of
+        # watts), so a hard brake CAN out-run the clamp. The honest assertion
+        # is comparative: same stimulus, clamp off vs on. The baseline is
+        # bounded by the stock regen-cut band + the battery catch — both
+        # verified present on this bench.
+        confirm('Step 4a (BASELINE, everything disarmed): drives at 3 A to '
+                'natural top speed, then brakes 5 A. The bus WILL rise '
+                'into the regen-cut band (~29 V). Hands clear.')
+        node.disarm_bus_clamp()
+        base_max, base_min_i, base_erpm, _ = spin_brake(node, 3.0, 5.0, 2.0, samples=50)
+        print('     baseline: peak %.0f erpm, max v_bus %.1f V, min i_bus %.2f A'
+              % (base_erpm, base_max, base_min_i))
+        time.sleep(1.0)
+
+        v_clamp_4 = psu_v + 1.0
+        confirm('Step 4b (CLAMP): same stimulus, clamp %.1f V (PSU + 1), '
+                'i_max 20 A. Expect engagement and a lower peak than the '
+                'baseline. Hands clear.' % v_clamp_4)
+        node.conf_bus_clamp(v_clamp_4, i_floor=0.0, i_max=20.0,
                             clamp_en=True, floor_en=False)
-        max_v, _min_i, log = spin_brake(node, 3000, 3.0, 2.0, samples=50)
+        max_v, _min_i, peak_erpm, log = spin_brake(node, 3.0, 5.0, 2.0, samples=50)
         engaged = any(s.clamp_active for s in log)
-        held = max_v < v_clamp + 2.0
+        id_max = max((s.id_clamp_now for s in log), default=0.0)
         results.append(check('clamp engages during brake', engaged,
-                             '%d samples, id_now max %.1f A' %
-                             (len(log), max((s.id_clamp_now for s in log), default=0.0))))
-        results.append(check('v_bus held (< v_clamp + 2 V)', held,
-                             'max v_bus %.1f V vs clamp %.1f V' % (max_v, v_clamp)))
+                             'peak %.0f erpm, %d samples, id_now max %.1f A' %
+                             (peak_erpm, len(log), id_max)))
+        # The design criterion: with adequate i_max the clamp HOLDS the bus at
+        # its setpoint. (The unclamped baseline is context, not the metric —
+        # its ~30 ms spike-fold-drain excursion aliases against 50 Hz
+        # telemetry, while a working clamp produces a sustained, always-caught
+        # plateau AT the setpoint. An under-provisioned i_max fails this
+        # check honestly: the bus rides up to the regen-cut band instead.)
+        results.append(check('clamp holds v_bus at setpoint (+2 V)',
+                             max_v < v_clamp_4 + 2.0,
+                             'max v_bus %.1f V vs setpoint %.1f V (unclamped baseline saw %.1f V)' %
+                             (max_v, v_clamp_4, base_max)))
 
         # -- 5: floor-PI alone — i_bus never goes negative --------------------
-        confirm('Step 5 (FLOOR): same spin/brake, floor mode (i_floor = 0). '
-                'Regen must be burned as produced — i_bus should not go '
-                'meaningfully negative and v_bus should stay near PSU voltage.')
-        node.conf_bus_clamp(v_clamp, i_floor=0.0, i_max=10.0,
+        confirm('Step 5 (FLOOR): gentler brake (2 A), floor mode (i_floor = '
+                '0), clamp %.1f V as backstop, i_max 20 A. Regen must be '
+                'burned as produced — i_bus should not go meaningfully '
+                'negative.' % v_clamp)
+        node.conf_bus_clamp(v_clamp, i_floor=0.0, i_max=20.0,
                             clamp_en=True, floor_en=True)
-        max_v, min_i, log = spin_brake(node, 3000, 3.0, 2.0, samples=50)
+        max_v, min_i, peak_erpm, log = spin_brake(node, 3.0, 2.0, 2.0, samples=50)
+        floor_seen = any(s.floor_active for s in log)
         results.append(check('floor holds i_bus >= ~0', min_i > -0.5,
-                             'min i_bus %.2f A' % min_i))
+                             'min i_bus %.2f A (floor_active seen: %s, peak %.0f erpm)' %
+                             (min_i, floor_seen, peak_erpm)))
         results.append(check('bus stays pinned near PSU', max_v < v_clamp,
                              'max v_bus %.1f V' % max_v))
 
         # -- 6: erpm gate — auto-restart must REFUSE at standstill ------------
-        confirm('Step 6 (RESTART GATE): with the motor STOPPED, v_clamp is '
-                'dropped below PSU voltage with allow_start on. The clamp '
-                'must NOT start the motor (observer untrustworthy at 0 rpm).')
+        # Quiesce FIRST: modulation from step 5 takes ~0.5 s to release, and
+        # an armed clamp on a still-running loop legitimately engages at any
+        # speed (the gate only guards the restart path).
+        node.disarm_bus_clamp()
+        node.set_current(0.0)
+        time.sleep(2.5)
+        confirm('Step 6 (RESTART GATE): motor stopped and released; v_clamp '
+                'is dropped below PSU voltage with allow_start on. The clamp '
+                'must NOT start modulation (observer untrustworthy at 0 rpm).')
         node.conf_bus_clamp(max(psu_v - 2.0, 10.0), i_floor=0.0, i_max=3.0,
                             clamp_en=True, floor_en=False,
                             allow_start_modulation=True)
