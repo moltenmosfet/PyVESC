@@ -190,9 +190,15 @@ class WriteNewAppData(metaclass=VESCMessage):
        write_new_app_data_result = 0 if failed, 1 if successful
     """
     id = VedderCmd.COMM_WRITE_NEW_APP_DATA
+    # 'data' MUST be a variable-length bytestring ('s' + scalar -1), NOT a fixed
+    # '384s'. The metaclass only treats a bare 's' as variable (packed at the
+    # actual data length); a fixed '384s' pads the final partial chunk out to
+    # 384 bytes, so the last write runs past the end of the app flash partition
+    # and faults the VESC (USB drops with Errno 5). Once any field carries a
+    # scalar, every field must — hence ('offset', 'I', 1).
     send_fields = [
-        ('offset', 'I'),
-        ('data', f'{384}s')
+        ('offset', 'I', 1),
+        ('data', 's', -1)
     ]
     recv_fields = [
         ('write_new_app_result', '?', 0),
@@ -208,9 +214,10 @@ class WriteNewAppDataLZO(metaclass=VESCMessage):
        and the VESC is required to decompress
     """
     id = VedderCmd.COMM_WRITE_NEW_APP_DATA_LZO
+    # Variable-length data — see the note on WriteNewAppData.
     send_fields = [
-        ('offset', 'I'),
-        ('data', f'{384}s')
+        ('offset', 'I', 1),
+        ('data', 's', -1)
     ]
     recv_fields = [
         ('write_new_app_result', '?', 0),
